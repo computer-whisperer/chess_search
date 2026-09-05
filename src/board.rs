@@ -62,10 +62,10 @@ impl Kind {
             _ => return None,
         })
     }
-    fn slides_orthogonal(self) -> bool {
+    pub fn slides_orthogonal(self) -> bool {
         matches!(self, Kind::Queen | Kind::Rook)
     }
-    fn slides_diagonal(self) -> bool {
+    pub fn slides_diagonal(self) -> bool {
         matches!(self, Kind::Queen | Kind::Bishop)
     }
 }
@@ -241,10 +241,15 @@ const KNIGHT: [(i32, i32); 8] = [
 
 /// Is `sq` attacked by any piece of color `by`? Scans outward from `sq`, so
 /// it consults squares, not piece locations — a region can answer this
-/// without knowing where every piece is.
+/// without knowing where every piece is. Only scans for the kinds `by`
+/// actually has in the setup: a ray is walked to its blocker only when a
+/// slider of that ray's type exists, and knight squares only with a knight.
 pub fn attacked<O: Oracle>(setup: &Setup, o: &O, sq: Sq, by: Color) -> Res<bool> {
-    // Sliders and adjacent king along the 8 rays.
-    for (dirs, diag) in [(&ORTHO, false), (&DIAG, true)] {
+    let has = |pred: fn(Kind) -> bool| setup.slots_of(by).any(|s| pred(setup.kind(s)));
+    let ortho = has(Kind::slides_orthogonal);
+    let diag = has(Kind::slides_diagonal);
+    let knight = has(|k| k == Kind::Knight);
+    for (dirs, is_diag, slider) in [(&ORTHO, false, ortho), (&DIAG, true, diag)] {
         for &(df, dr) in dirs.iter() {
             let mut cur = sq;
             let mut dist = 0;
@@ -254,23 +259,28 @@ pub fn attacked<O: Oracle>(setup: &Setup, o: &O, sq: Sq, by: Color) -> Res<bool>
                     if setup.color(s) == by {
                         let k = setup.kind(s);
                         let hits = (dist == 1 && k == Kind::King)
-                            || (diag && k.slides_diagonal())
-                            || (!diag && k.slides_orthogonal());
+                            || (is_diag && k.slides_diagonal())
+                            || (!is_diag && k.slides_orthogonal());
                         if hits {
                             return Ok(true);
                         }
                     }
                     break;
                 }
+                if !slider {
+                    break; // only the adjacent square matters (king attacks)
+                }
                 cur = next;
             }
         }
     }
-    for &(df, dr) in KNIGHT.iter() {
-        if let Some(t) = setup.step(sq, df, dr) {
-            if let Some(s) = o.at(t)? {
-                if setup.color(s) == by && setup.kind(s) == Kind::Knight {
-                    return Ok(true);
+    if knight {
+        for &(df, dr) in KNIGHT.iter() {
+            if let Some(t) = setup.step(sq, df, dr) {
+                if let Some(s) = o.at(t)? {
+                    if setup.color(s) == by && setup.kind(s) == Kind::Knight {
+                        return Ok(true);
+                    }
                 }
             }
         }
@@ -286,7 +296,7 @@ pub fn in_check<O: Oracle>(setup: &Setup, o: &O, c: Color) -> Res<bool> {
 }
 
 /// Pseudo-legal moves of slot `s` from `from` (destination empty or enemy).
-fn piece_moves<O: Oracle>(
+pub fn piece_moves<O: Oracle>(
     setup: &Setup,
     o: &O,
     s: SlotId,

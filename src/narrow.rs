@@ -340,14 +340,68 @@ pub struct Engine {
     queries: std::cell::Cell<u64>,
     memo: HashMap<(Q, u16, Color), Vec<(Pattern, bool)>>,
     pub use_memo: bool,
+    /// Try the slots in reverse order (e.g. rook before king).
+    pub reverse_slots: bool,
 }
 
 /// A bool-valued partition of a region, each part with the facts it used.
 type Parts = Vec<(Region, bool, Pattern)>;
 
+/// Facts sufficient for `mv` to be a legal move: the mover's location, the
+/// squares it passes over and lands on, and the safety of the own king
+/// afterwards. Re-derived on a region where those queries are decided.
+fn move_facts(setup: &Setup, r: &Region, mv: Move, queries: &std::cell::Cell<u64>) -> Pattern {
+    let rec = Rec { r, log: RefCell::new(Pattern::full(setup)), queries };
+    let go = || -> Res<()> {
+        rec.locate(mv.slot)?;
+        let (f0, r0) = setup.file_rank(mv.from);
+        let (f1, r1) = setup.file_rank(mv.to);
+        let (df, dr) = ((f1 - f0).signum(), (r1 - r0).signum());
+        let slides = !matches!(setup.kind(mv.slot), Kind::King | Kind::Knight);
+        if slides {
+            let mut cur = mv.from;
+            loop {
+                cur = setup.step(cur, df, dr).expect("ray stays on board");
+                if cur == mv.to {
+                    break;
+                }
+                rec.at(cur)?;
+            }
+        }
+        rec.at(mv.to)?;
+        let after = Played { base: &rec, mv };
+        in_check(setup, &after, setup.color(mv.slot))?;
+        Ok(())
+    };
+    go().expect("move facts are decided on a region where the move was generated");
+    rec.log.into_inner()
+}
+
+/// Legal moves of one slot only.
+fn slot_moves<O: Oracle>(setup: &Setup, o: &O, s: SlotId) -> Res<Vec<Move>> {
+    let Some(from) = o.locate(s)? else { return Ok(Vec::new()) };
+    let mut pseudo = Vec::new();
+    piece_moves(setup, o, s, from, &mut pseudo)?;
+    let mut legal = Vec::with_capacity(pseudo.len());
+    for mv in pseudo {
+        let after = Played { base: o, mv };
+        if !in_check(setup, &after, setup.color(s))? {
+            legal.push(mv);
+        }
+    }
+    Ok(legal)
+}
+
 impl Engine {
     pub fn new(setup: Setup) -> Engine {
-        Engine { setup, counters: Counters::default(), queries: Default::default(), memo: HashMap::new(), use_memo: true }
+        Engine {
+            setup,
+            counters: Counters::default(),
+            queries: Default::default(),
+            memo: HashMap::new(),
+            use_memo: true,
+            reverse_slots: false,
+        }
     }
 
     fn lookup(&mut self, q: Q, d: u16, r: &Region) -> Option<(bool, Pattern)> {
@@ -390,104 +444,110 @@ impl Engine {
         }
     }
 
-    /// Can the side to move force mate within `d` plies?
     fn mate_in(&mut self, r: Region, d: u16) -> Parts {
+        self.search(r, d, Q::MateIn)
+    }
+
+    fn mated_in(&mut self, r: Region, d: u16) -> Parts {
+        self.search(r, d, Q::MatedIn)
+    }
+
+    /// `MateIn`: can the side to move force mate within `d` plies?
+    /// `MatedIn`: is the side to move mated within `d` plies (mated now counts)?
+    ///
+    /// Both are one AND/OR search: moves are generated one slot at a time and
+    /// tried at once, so the region forks only on what the tried move needs.
+    /// An "any" verdict (a mating move, an escape) keeps only that move's
+    /// facts and its child's pattern; an "all" verdict keeps everything.
+    fn search(&mut self, r: Region, d: u16, q: Q) -> Parts {
         self.counters.nodes += 1;
         let setup = self.setup.clone();
-        if d == 0 {
+        if q == Q::MateIn && d == 0 {
             return vec![(r, false, Pattern::full(&setup))];
         }
         if r.only_kings(&setup) {
             let p = Pattern::kings_only(&setup);
             return vec![(r, false, p)];
         }
-        if let Some((v, p)) = self.lookup(Q::MateIn, d, &r) {
-            return vec![(r, v, p)];
-        }
-        let (moves, facts) = match self.consult(&r, |o| legal_moves(&setup, o, r.stm)) {
-            Ok(x) => x,
-            Err(children) => return children.into_iter().flat_map(|c| self.mate_in(c, d)).collect(),
-        };
-        let mut done: Parts = Vec::new();
-        // Sub-regions where no winning move has been found yet, with the
-        // facts (all failed moves' refutations) that would justify "false".
-        let mut remaining: Vec<(Region, Pattern)> = vec![(r.clone(), facts.clone())];
-        for mv in moves {
-            let mut next = Vec::new();
-            for (sub, acc) in remaining {
-                for (child, mated, cp) in self.mated_in(sub.play(mv), d - 1) {
-                    let back = Region::pullback(&child, mv);
-                    let cp = cp.pullback(mv);
-                    if mated {
-                        // One winning move suffices: only its facts matter.
-                        done.push((back, true, facts.meet(&cp)));
-                    } else {
-                        next.push((back, acc.meet(&cp)));
-                    }
-                }
-            }
-            remaining = next;
-            if remaining.is_empty() {
-                break;
-            }
-        }
-        done.extend(remaining.into_iter().map(|(sub, acc)| (sub, false, acc)));
-        self.store(Q::MateIn, d, r.stm, &done);
-        done
-    }
-
-    /// Is the side to move mated within `d` plies (mated now counts)?
-    fn mated_in(&mut self, r: Region, d: u16) -> Parts {
-        self.counters.nodes += 1;
-        let setup = self.setup.clone();
-        if r.only_kings(&setup) {
-            let p = Pattern::kings_only(&setup);
-            return vec![(r, false, p)];
-        }
-        if let Some((v, p)) = self.lookup(Q::MatedIn, d, &r) {
+        if let Some((v, p)) = self.lookup(q, d, &r) {
             return vec![(r, v, p)];
         }
         let stm = r.stm;
-        let res = self.consult(&r, |o| {
-            let moves = legal_moves(&setup, o, stm)?;
-            let check = if moves.is_empty() { in_check(&setup, o, stm)? } else { false };
-            Ok((moves, check))
-        });
-        let ((moves, check), facts) = match res {
-            Ok(x) => x,
-            Err(children) => return children.into_iter().flat_map(|c| self.mated_in(c, d)).collect(),
+        // The child verdict that settles this node at once, and what it settles it to.
+        let (trigger, any_result) = match q {
+            Q::MateIn => (true, true),   // a reply that is mated -> we mate
+            Q::MatedIn => (false, false), // a reply that is not mated -> we escape
         };
-        if moves.is_empty() {
-            let out = vec![(r, check, facts)];
-            self.store(Q::MatedIn, d, stm, &out);
-            return out;
-        }
-        if d == 0 {
-            return vec![(r, false, facts)];
+        let other = match q {
+            Q::MateIn => Q::MatedIn,
+            Q::MatedIn => Q::MateIn,
+        };
+        let mut slots: Vec<SlotId> = setup.slots_of(stm).collect();
+        if self.reverse_slots {
+            slots.reverse();
         }
         let mut done: Parts = Vec::new();
-        let mut remaining: Vec<(Region, Pattern)> = vec![(r.clone(), facts.clone())];
-        for mv in moves {
-            let mut next = Vec::new();
-            for (sub, acc) in remaining {
-                for (child, wins, cp) in self.mate_in(sub.play(mv), d - 1) {
-                    let back = Region::pullback(&child, mv);
-                    let cp = cp.pullback(mv);
-                    if wins {
-                        next.push((back, acc.meet(&cp)));
-                    } else {
-                        // One escape suffices: only its facts matter.
-                        done.push((back, false, facts.meet(&cp)));
+        // Sub-regions not yet settled: (region, facts so far, had any legal move).
+        let mut cur: Vec<(Region, Pattern, bool)> = vec![(r.clone(), Pattern::full(&setup), false)];
+        for s in slots {
+            let mut next_cur = Vec::new();
+            let mut stack = cur;
+            while let Some((sub, acc, had)) = stack.pop() {
+                let (moves, facts) = match self.consult(&sub, |o| slot_moves(&setup, o, s)) {
+                    Ok(x) => x,
+                    Err(children) => {
+                        stack.extend(children.into_iter().map(|c| (c, acc.clone(), had)));
+                        continue;
+                    }
+                };
+                let had = had || !moves.is_empty();
+                let mut rem = vec![(sub, acc.meet(&facts))];
+                for mv in moves {
+                    let mut nrem = Vec::new();
+                    for (sub2, a) in rem {
+                        if q == Q::MatedIn && d == 0 {
+                            // Any legal move is an escape from mate-now.
+                            let mf = move_facts(&setup, &sub2, mv, &self.queries);
+                            done.push((sub2, false, mf));
+                            continue;
+                        }
+                        for (child, v, cp) in self.search(sub2.play(mv), d - 1, other) {
+                            let back = Region::pullback(&child, mv);
+                            let cp = cp.pullback(mv);
+                            if v == trigger {
+                                let mf = move_facts(&setup, &back, mv, &self.queries);
+                                done.push((back, any_result, mf.meet(&cp)));
+                            } else {
+                                nrem.push((back, a.meet(&cp)));
+                            }
+                        }
+                    }
+                    rem = nrem;
+                    if rem.is_empty() {
+                        break;
+                    }
+                }
+                next_cur.extend(rem.into_iter().map(|(sub, a)| (sub, a, had)));
+            }
+            cur = next_cur;
+        }
+        // No settling move anywhere in these: the "all" verdict, or no moves at all.
+        for (sub, acc, had) in cur {
+            match q {
+                Q::MateIn => done.push((sub, false, acc)),
+                Q::MatedIn if had => done.push((sub, true, acc)),
+                Q::MatedIn => {
+                    let mut stack = vec![sub];
+                    while let Some(sub) = stack.pop() {
+                        match self.consult(&sub, |o| in_check(&setup, o, stm)) {
+                            Ok((check, f)) => done.push((sub, check, acc.meet(&f))),
+                            Err(children) => stack.extend(children),
+                        }
                     }
                 }
             }
-            remaining = next;
-            if remaining.is_empty() {
-                break;
-            }
         }
-        done.extend(remaining.into_iter().map(|(sub, acc)| (sub, true, acc)));
-        self.store(Q::MatedIn, d, stm, &done);
+        self.store(q, d, stm, &done);
         done
     }
 

@@ -62,11 +62,13 @@ fn main() {
         "narrow" => {
             let no_memo = args.iter().any(|a| a == "--no-memo");
             let direct = args.iter().any(|a| a == "--direct");
+            let reverse = args.iter().any(|a| a == "--reverse");
             let table = Table::solve(setup.clone());
             let st = table.stats();
             let t0 = Instant::now();
             let mut eng = Engine::new(setup.clone());
             eng.use_memo = !no_memo;
+            eng.reverse_slots = reverse;
             let mut leaves = Vec::new();
             for stm in [Color::White, Color::Black] {
                 leaves.extend(eng.solve_with(Region::root(&setup, stm), st.max_dtm, direct));
