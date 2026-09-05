@@ -1,0 +1,13 @@
+[package]
+name = "chess_search"
+version = "0.1.0"
+edition = "2024"
+description = "The shape of brute-force chess search: retrograde ground truth vs superposed (narrowing) proof search on small boards"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+debug = 1
+
+[dependencies]
