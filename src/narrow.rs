@@ -334,11 +334,52 @@ pub struct Counters {
     pub memo_entries: u64,
 }
 
+/// Pattern entries for one (query, horizon, stm), bucketed by the square
+/// slot 0 (the white king) is pinned to; entries that leave it unpinned go
+/// in the wildcard bucket and are scanned on every lookup.
+#[derive(Default)]
+struct Memo {
+    by_sq: Vec<Vec<(Pattern, bool)>>,
+    wild: Vec<(Pattern, bool)>,
+}
+
+impl Memo {
+    fn bucket(&mut self, p: &Pattern) -> &mut Vec<(Pattern, bool)> {
+        match p.dom[0].is_pinned() {
+            Some(sq) => {
+                let sq = sq as usize;
+                if self.by_sq.len() <= sq {
+                    self.by_sq.resize_with(sq + 1, Vec::new);
+                }
+                &mut self.by_sq[sq]
+            }
+            None => &mut self.wild,
+        }
+    }
+    fn find(&self, r: &Region) -> Option<(bool, &Pattern)> {
+        let pinned = r.dom[0].is_pinned().and_then(|sq| self.by_sq.get(sq as usize));
+        pinned
+            .into_iter()
+            .flatten()
+            .chain(self.wild.iter())
+            .find(|(p, _)| p.covers(r))
+            .map(|(p, v)| (*v, p))
+    }
+    fn insert(&mut self, p: Pattern, v: bool) -> bool {
+        let b = self.bucket(&p);
+        if b.iter().any(|(e, _)| *e == p) {
+            return false;
+        }
+        b.push((p, v));
+        true
+    }
+}
+
 pub struct Engine {
     pub setup: Setup,
     pub counters: Counters,
     queries: std::cell::Cell<u64>,
-    memo: HashMap<(Q, u16, Color), Vec<(Pattern, bool)>>,
+    memo: HashMap<(Q, u16, Color), Memo>,
     pub use_memo: bool,
     /// Try the slots in reverse order (e.g. rook before king).
     pub reverse_slots: bool,
@@ -408,14 +449,9 @@ impl Engine {
         if !self.use_memo {
             return None;
         }
-        let entries = self.memo.get(&(q, d, r.stm))?;
-        for (p, v) in entries {
-            if p.covers(r) {
-                self.counters.memo_hits += 1;
-                return Some((*v, p.clone()));
-            }
-        }
-        None
+        let (v, p) = self.memo.get(&(q, d, r.stm))?.find(r)?;
+        self.counters.memo_hits += 1;
+        Some((v, p.clone()))
     }
 
     fn store(&mut self, q: Q, d: u16, stm: Color, parts: &Parts) {
@@ -424,8 +460,7 @@ impl Engine {
         }
         let entries = self.memo.entry((q, d, stm)).or_default();
         for (_, v, p) in parts {
-            if !entries.iter().any(|(e, _)| e == p) {
-                entries.push((p.clone(), *v));
+            if entries.insert(p.clone(), *v) {
                 self.counters.memo_entries += 1;
             }
         }
