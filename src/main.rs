@@ -1,13 +1,15 @@
 mod board;
+mod narrow;
 mod retro;
 
 use board::*;
+use narrow::*;
 use retro::*;
 use std::time::Instant;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  chess_search retro [N] [MATERIAL]   solve by retrograde analysis (default 4 KRvK)\n  chess_search pv [N] [MATERIAL] [SLOT=SQ ...] [w|b]   print the PV from a position"
+        "usage:\n  chess_search retro [N] [MATERIAL]   solve by retrograde analysis (default 4 KRvK)\n  chess_search narrow [N] [MATERIAL] [--no-memo]   superposed (narrowing) solve, verified against the table"
     );
     std::process::exit(2)
 }
@@ -32,7 +34,8 @@ fn main() {
             let st = table.stats();
             println!("{} on {}x{}: {} index slots, {} legal positions, {} up to symmetry",
                 setup.name(), n, n, st.slots, st.legal, st.canonical);
-            println!("solved in {} passes, {:.2?}", table.passes, solve_time);
+            println!("solved in {} passes, {:.2?}, {} oracle queries ({:.1} per legal position)",
+                table.passes, solve_time, table.queries, table.queries as f64 / st.legal as f64);
             for c in [Color::White, Color::Black] {
                 let i = c.idx();
                 println!("  {:?} to move: {} wins, {} losses, {} draws", c, st.wins[i], st.losses[i], st.draws[i]);
@@ -56,8 +59,125 @@ fn main() {
                 }
             }
         }
+        "narrow" => {
+            let no_memo = args.iter().any(|a| a == "--no-memo");
+            let direct = args.iter().any(|a| a == "--direct");
+            let table = Table::solve(setup.clone());
+            let st = table.stats();
+            let t0 = Instant::now();
+            let mut eng = Engine::new(setup.clone());
+            eng.use_memo = !no_memo;
+            let mut leaves = Vec::new();
+            for stm in [Color::White, Color::Black] {
+                leaves.extend(eng.solve_with(Region::root(&setup, stm), st.max_dtm, direct));
+            }
+            let elapsed = t0.elapsed();
+            let rep = narrow_report(&table, &leaves, direct);
+            println!("{} on {}x{}: {} legal positions ({} up to symmetry), max DTM {}",
+                setup.name(), n, n, st.legal, st.canonical, st.max_dtm);
+            println!("narrowing: {} leaves ({} illegal, {} win, {} loss, {} draw) in {:.2?}",
+                leaves.len(), rep.illegal, rep.win, rep.loss, rep.draw, elapsed);
+            println!("  work: {} oracle queries, {} forks, {} nodes, memo {} entries / {} hits",
+                eng.counters.queries, eng.counters.forks, eng.counters.nodes, eng.counters.memo_entries, eng.counters.memo_hits);
+            println!("  value leaves per legal position: {:.4}; queries per legal position: {:.3}",
+                (leaves.len() - rep.illegal) as f64 / st.legal as f64, eng.counters.queries as f64 / st.legal as f64);
+            println!("  distinct patterns: {}, legal positions matched per pattern (mean): {:.2}",
+                rep.patterns, rep.pattern_matches as f64 / rep.patterns.max(1) as f64);
+            match rep.error {
+                None => println!("verify: OK (every legal position in exactly one leaf, verdicts and patterns agree with the table)"),
+                Some(e) => {
+                    println!("verify: FAILED: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => usage(),
     }
+}
+
+struct NarrowReport {
+    illegal: usize,
+    win: usize,
+    loss: usize,
+    draw: usize,
+    patterns: usize,
+    pattern_matches: usize,
+    error: Option<String>,
+}
+
+/// Check the leaves against the table: exact cover of the legal positions,
+/// verdict agreement per position, and pattern soundness (every legal
+/// position matching a leaf's pattern has the leaf's verdict).
+fn narrow_report(table: &Table, leaves: &[Leaf], direct: bool) -> NarrowReport {
+    let setup = &table.setup;
+    let mut rep = NarrowReport { illegal: 0, loss: 0, win: 0, draw: 0, patterns: 0, pattern_matches: 0, error: None };
+    let mut seen = vec![false; table.vals.len()];
+    let mut patterns = std::collections::HashSet::new();
+    let legal: Vec<(usize, Position, Val)> = table
+        .vals
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| **v != Val::Illegal)
+        .map(|(i, v)| (i, Table::position(setup, i), *v))
+        .collect();
+    let agrees = |verdict: Verdict, v: Val| match (verdict, v) {
+        (Verdict::Win(d), Val::Win(e)) => if direct { e <= d } else { d == e },
+        (Verdict::Loss(d), Val::Loss(e)) => if direct { e <= d } else { d == e },
+        (Verdict::Draw, Val::Draw) => true,
+        _ => false,
+    };
+    for leaf in leaves {
+        match leaf.verdict {
+            Verdict::Illegal => rep.illegal += 1,
+            Verdict::Win(_) => rep.win += 1,
+            Verdict::Loss(_) => rep.loss += 1,
+            Verdict::Draw => rep.draw += 1,
+        }
+        if !leaf.pattern.covers(&leaf.region) {
+            rep.error = Some(format!("leaf pattern does not cover its region: {:?}", leaf));
+            return rep;
+        }
+        for p in leaf.region.positions() {
+            let i = Table::index(setup, &p);
+            let v = table.vals[i];
+            if leaf.verdict == Verdict::Illegal {
+                if v != Val::Illegal {
+                    rep.error = Some(format!("legal position {i} in an Illegal leaf"));
+                    return rep;
+                }
+                continue;
+            }
+            if v == Val::Illegal {
+                rep.error = Some(format!("illegal position {i} in a {:?} leaf", leaf.verdict));
+                return rep;
+            }
+            if seen[i] {
+                rep.error = Some(format!("position {i} covered twice"));
+                return rep;
+            }
+            seen[i] = true;
+            if !agrees(leaf.verdict, v) {
+                rep.error = Some(format!("position {i}: leaf says {:?}, table says {v:?}\n{}", leaf.verdict, p.render(setup)));
+                return rep;
+            }
+        }
+        if leaf.verdict != Verdict::Illegal && patterns.insert((leaf.region.stm, leaf.pattern.clone())) {
+            rep.patterns += 1;
+            for (i, p, v) in &legal {
+                if p.stm == leaf.region.stm && leaf.pattern.covers_position(p) {
+                    rep.pattern_matches += 1;
+                    if !agrees(leaf.verdict, *v) {
+                        rep.error = Some(format!("pattern unsound: position {i} is {v:?} but pattern says {:?}\n{}", leaf.verdict, p.render(setup)));
+                        return rep;
+                    }
+                }
+            }
+        }
+    }
+    if let Some((i, _, _)) = legal.iter().find(|(i, _, _)| !seen[*i]) {
+        rep.error = Some(format!("legal position {i} not covered by any leaf"));
+    }
+    rep
 }
 
 #[cfg(test)]
@@ -72,6 +192,20 @@ mod tests {
         let st = table.stats();
         assert!(st.legal > 0);
         assert!(st.wins[0] > 0, "white should have some wins");
+    }
+
+    #[test]
+    fn narrowing_agrees_with_table_krk_4x4() {
+        let setup = Setup::parse(4, "KRvK").unwrap();
+        let table = Table::solve(setup.clone());
+        let dmax = table.stats().max_dtm;
+        let mut eng = Engine::new(setup.clone());
+        let mut leaves = Vec::new();
+        for stm in [Color::White, Color::Black] {
+            leaves.extend(eng.solve(Region::root(&setup, stm), dmax));
+        }
+        let rep = narrow_report(&table, &leaves, false);
+        assert_eq!(rep.error, None);
     }
 
     #[test]

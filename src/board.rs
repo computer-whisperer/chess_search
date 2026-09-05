@@ -397,6 +397,12 @@ impl Position {
     /// Basic legality: kings present, no square shared, the side not to move
     /// is not in check (it would have been captured otherwise).
     pub fn is_legal(&self, setup: &Setup) -> bool {
+        self.is_legal_via(setup, self)
+    }
+
+    /// `is_legal` with the check test routed through `o` (a counting or
+    /// recording view of this same position).
+    pub fn is_legal_via<O: Oracle>(&self, setup: &Setup, o: &O) -> bool {
         for c in [Color::White, Color::Black] {
             if self.sqs[setup.king_slot(c) as usize].is_none() {
                 return false;
@@ -409,7 +415,7 @@ impl Position {
                 }
             }
         }
-        !in_check(setup, self, self.stm.flip()).unwrap()
+        !in_check(setup, o, self.stm.flip()).unwrap()
     }
 
     pub fn only_kings(&self, setup: &Setup) -> bool {

@@ -23,6 +23,24 @@ pub struct Table {
     pub setup: Setup,
     pub vals: Vec<Val>,
     pub passes: u32,
+    /// Oracle queries spent by the solve (legality + one move generation per position).
+    pub queries: u64,
+}
+
+/// A position wrapper that counts oracle queries.
+struct Counting<'a> {
+    p: &'a Position,
+    n: &'a std::cell::Cell<u64>,
+}
+impl Oracle for Counting<'_> {
+    fn at(&self, sq: Sq) -> Res<Option<SlotId>> {
+        self.n.set(self.n.get() + 1);
+        self.p.at(sq)
+    }
+    fn locate(&self, s: SlotId) -> Res<Option<Sq>> {
+        self.n.set(self.n.get() + 1);
+        self.p.locate(s)
+    }
 }
 
 impl Table {
@@ -66,19 +84,21 @@ impl Table {
         let mut vals = vec![Val::Illegal; size];
         let mut legal: Vec<usize> = Vec::new();
         let mut moves: Vec<Vec<usize>> = Vec::new(); // successor indices per legal position, parallel to `legal`
+        let nq = std::cell::Cell::new(0u64);
         // Pass 0: legality, terminal positions, successor lists.
         for i in 0..size {
             let p = Self::position(&setup, i);
-            if !p.is_legal(&setup) {
+            let o = Counting { p: &p, n: &nq };
+            if !p.is_legal_via(&setup, &o) {
                 continue;
             }
             if p.only_kings(&setup) {
                 vals[i] = Val::Draw;
                 continue;
             }
-            let lm = legal_moves(&setup, &p, p.stm).unwrap();
+            let lm = legal_moves(&setup, &o, p.stm).unwrap();
             if lm.is_empty() {
-                vals[i] = if in_check(&setup, &p, p.stm).unwrap() { Val::Loss(0) } else { Val::Draw };
+                vals[i] = if in_check(&setup, &o, p.stm).unwrap() { Val::Loss(0) } else { Val::Draw };
                 continue;
             }
             vals[i] = Val::Draw;
@@ -122,7 +142,7 @@ impl Table {
                 break;
             }
         }
-        Table { setup, vals, passes }
+        Table { setup, vals, passes, queries: nq.get() }
     }
 
     /// Full self-consistency check of the solved table against forward move
