@@ -89,6 +89,7 @@ it.
 | 5×5 | KRvK | 18,440 | 18,440 | 1.000 | 1.00 | 857 | — |
 | 6×6 | KRvK | 62,880 | 62,880 | 1.000 | 1.00 | 1,391 | — |
 | 4×4 | KRRvK | 45,488 | 44,936 | 0.988 | 1.02 | 319 | — |
+| 5×5 | KRRvK | 368,664 | 365,770 | 0.992 | 1.02 | 655 | — |
 
 `--direct` (win/draw/loss only, no deepening) gives the same partition on
 every row. Exact agreement with the table holds on every row.
