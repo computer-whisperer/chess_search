@@ -1,0 +1,106 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mini rook chess — certified nonlosing policy</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#0e1622;color:#e8edf4}body{max-width:1000px;margin:auto;padding:30px 22px}h1{font-size:clamp(24px,4vw,36px);letter-spacing:-.04em;margin:6px 0 12px}p{line-height:1.6;color:#b7c5d5}header{margin-bottom:24px}.eyebrow{color:#7ddbd0;font-weight:700;font-size:12px;letter-spacing:.12em}main{display:grid;grid-template-columns:minmax(260px,460px) 1fr;gap:30px}.panel{background:#152131;border:1px solid #2c3c50;padding:20px;border-radius:12px}#board{display:grid;grid-template-columns:repeat(var(--n),1fr);aspect-ratio:1;border:5px solid #344459;border-radius:6px;overflow:hidden}button,select{font:inherit;border:1px solid #48617a;border-radius:6px;padding:8px 12px;color:#eaf0f8;background:#26384c;cursor:pointer}.controls{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 18px;align-items:center}.square{border:0;border-radius:0;padding:0;position:relative;font-size:clamp(35px,7vw,72px);display:grid;place-items:center;line-height:1;background:#afbed0}.square.dark{background:#64809b}.square.whitepiece{color:#fcf5df;text-shadow:0 1px 2px #172435,1px 0 1px #172435,-1px 0 1px #172435}.square.blackpiece{color:#0a1524;text-shadow:0 1px 1px #e0e9f5}.square.selected{box-shadow:inset 0 0 0 5px #efbc65}.square.target:after{content:'';position:absolute;inset:38%;border-radius:50%;background:#db733a88}.coordinate{position:absolute;bottom:4px;left:6px;font:11px system-ui;color:#213447;text-shadow:none}#status{font-weight:650;line-height:1.45;margin-bottom:12px;color:#f1f4f8}#badge{display:inline-block;font-size:12px;padding:5px 9px;border-radius:20px;background:#163e38;color:#9becd9;margin-bottom:15px}h2{font-size:18px;margin:0 0 10px}.metrics{font-size:14px;line-height:1.8}#log{font-family:ui-monospace,monospace;font-size:12px;line-height:1.8;white-space:pre-wrap;max-height:210px;overflow:auto;border-top:1px solid #344459;margin-top:16px;padding-top:12px;color:#b8cadc}.foot{font-size:12px;line-height:1.55}code{color:#92dfd2}#undo{margin-top:14px}@media(max-width:730px){main{grid-template-columns:1fr}body{padding:20px 16px}.square{font-size:clamp(44px,13vw,74px)}}
+</style></head><body><header><div class="eyebrow">A SMALL EXACT-SOLVING EXPERIMENT</div><h1>Play against a nonlosing certificate.</h1><p>This policy is not trying to play impressive chess. It chooses any move that stays inside an exhaustively checked safe region. It may draw when it could win.</p></header>
+<div class="controls"><label>Board <select id="size"><option value="4">4 × 4</option><option value="5">5 × 5</option></select></label><label>You play <select id="human"><option value="1">Black</option><option value="0">White</option></select></label><button id="new">New game</button></div>
+<main><section><div id="board"></div><button id="undo">Undo your last turn</button><p class="foot">Click your king or rook, then a highlighted destination. Standard king/rook moves and check rules; no castling. The certified model draws stalemate and infinite play. This demo additionally stops after a position appears three times, which cannot invalidate a nonloss guarantee.</p></section>
+<aside class="panel"><div id="status"></div><div id="badge"></div><h2>What was checked?</h2><p class="metrics" id="metrics"></p><p class="foot">Every included opponent position keeps <em>all</em> replies inside the invariant. Every included position on the policy’s turn has a legal preserving move, unless the game has ended safely. The initial position is inside the invariant for either color.</p><p class="foot">No position table is bundled or consulted. The browser executes the decision DAG and local move predicates. The board-size-specific certificates are different; the 4×4 certificate failed transfer to 5×5.</p><div id="log"></div></aside></main>
+<script>// Standalone runtime: no tablebase, training graph, network, or libraries.
+(function(root){
+'use strict';
+const lex=(a,b)=>{for(let i=0;i<a.length;i++)if(a[i]!==b[i])return a[i]-b[i];return 0;};
+class Rules {
+ constructor(n){this.n=n;this.m=n*n;this.mc=new Map();this.fc=new Map();}
+ distance(p,q){return Math.max(Math.abs(p%this.n-q%this.n),Math.abs(Math.floor(p/this.n)-Math.floor(q/this.n)));}
+ aligned(p,q){return p<this.m&&q<this.m&&(p%this.n===q%this.n||Math.floor(p/this.n)===Math.floor(q/this.n));}
+ clear(p,q,s){
+  if(!this.aligned(p,q)||p===q)return false;
+  const n=this.n,px=p%n,py=Math.floor(p/n),qx=q%n,qy=Math.floor(q/n);
+  for(const b of s.slice(0,4)){
+   if(b===this.m||b===p||b===q)continue;
+   const bx=b%n,by=Math.floor(b/n);
+   if(px===qx&&bx===px&&by>Math.min(py,qy)&&by<Math.max(py,qy))return false;
+   if(py===qy&&by===py&&bx>Math.min(px,qx)&&bx<Math.max(px,qx))return false;
+  }
+  return true;
+ }
+ attacked(s,side){return this.distance(s[2*side],s[2*(1-side)])<=1||this.clear(s[2*(1-side)+1],s[2*side],s);}
+ moves(s){
+  const key=s.join(',');if(this.mc.has(key))return this.mc.get(key);
+  const side=s[4],ki=2*side,ri=ki+1,eki=2*(1-side),eri=eki+1,out=[];
+  for(const pi of [ki,ri]){
+   const origin=s[pi];if(origin===this.m)continue;
+   for(let target=0;target<this.m;target++){
+    if(target===s[ki]||target===s[ri]||target===s[eki])continue;
+    if(pi===ki?this.distance(origin,target)!==1:!this.clear(origin,target,s))continue;
+    const t=s.slice();t[pi]=target;if(target===s[eri])t[eri]=this.m;t[4]=1-side;
+    if(!this.attacked(t,side))out.push(t);
+   }
+  }
+  out.sort(lex);this.mc.set(key,out);return out;
+ }
+ features(s){
+  const key=s.join(',');if(this.fc.has(key))return this.fc.get(key);
+  const [wk,wr,bk,br,turn]=s,n=this.n,m=this.m,f=[turn,+(wr===m),+(br===m)];
+  for(const p of [wk,bk,wr,br]){
+   const x=p%n,y=Math.floor(p/n);
+   f.push(p<m?Math.min(x,y,n-1-x,n-1-y):-1,+(p<m&&(x===0||x===n-1)&&(y===0||y===n-1)));
+  }
+  for(const [p,q] of [[wk,bk],[wk,wr],[bk,br],[wk,br],[bk,wr],[wr,br]])f.push(p<m&&q<m?this.distance(p,q):99,+this.aligned(p,q),+this.clear(p,q,s));
+  const ns=this.moves(s);
+  f.push(+this.attacked(s,turn),ns.length,+ns.some(t=>t[3]===m&&t[1]<m),+ns.some(t=>t[1]===m),
+   +ns.some(t=>this.attacked(t,t[4])),+ns.some(t=>this.attacked(t,t[4])&&this.moves(t).length===0),
+   +ns.some(t=>!this.attacked(t,t[4])&&this.moves(t).length===0));
+  this.fc.set(key,f);return f;
+ }
+}
+function normalize(s,side){return side===0?s:[s[2],s[3],s[0],s[1],1-s[4]];}
+function evaluate(cert,f){let node=cert.root;while(node>=2){const [feature,threshold,left,right]=cert.nodes[node-2];node=f[feature]<=threshold?left:right;}return node===1;}
+function safe(rules,cert,s,side){return evaluate(cert,rules.features(normalize(s,side)));}
+function choose(rules,cert,s,side){
+ if(s[4]!==side)throw new Error('Not this policy’s turn.');
+ if(!safe(rules,cert,s,side))throw new Error('Position outside the certified invariant.');
+ const candidates=rules.moves(s).slice().sort((a,b)=>lex(normalize(a,side),normalize(b,side)));
+ if(!candidates.length)return null;
+ const found=candidates.find(t=>safe(rules,cert,t,side));
+ if(!found)throw new Error('No preserving move: certificate/runtime mismatch.');
+ return found;
+}
+const api={Rules,normalize,evaluate,safe,choose,lex};
+if(typeof module!=='undefined')module.exports=api;else root.MiniRook=api;
+})(typeof globalThis!=='undefined'?globalThis:this);
+</script><script>
+const CERTS={"4":{"format":"mini-rook-safety-dag-v1","board":4,"root":61,"nodes":[[21,0,1,0],[20,2,1,0],[26,1,3,1],[23,1,1,0],[17,2,1,5],[20,1,1,0],[13,0,7,1],[5,0,6,8],[31,0,9,1],[14,2,4,10],[30,3,0,1],[26,1,12,1],[23,1,13,1],[14,2,1,14],[26,2,1,0],[23,1,16,1],[30,7,0,1],[26,2,1,18],[16,0,0,1],[14,1,19,20],[6,0,21,1],[14,2,22,0],[17,2,17,23],[33,0,1,24],[0,0,1,25],[4,0,0,1],[30,3,27,1],[26,1,28,1],[19,0,27,0],[26,2,29,30],[23,1,31,1],[22,0,26,32],[20,2,15,33],[30,1,11,34],[0,0,1,0],[34,0,35,36],[30,0,2,37],[35,0,0,1],[34,0,1,0],[23,1,39,40],[26,1,27,1],[1,0,42,0],[17,1,43,42],[26,1,39,1],[7,-1,0,45],[30,5,44,46],[6,0,1,0],[13,0,0,48],[35,0,0,49],[28,0,47,50],[9,0,1,0],[16,0,0,52],[30,1,1,53],[35,0,0,54],[20,1,51,55],[9,-1,1,56],[14,1,41,57],[32,0,38,58],[2,0,0,1],[8,0,59,60]],"feature_names":["opponent_to_move","own_rook_missing","opponent_rook_missing","own_king_edge_distance","own_king_corner","opponent_king_edge_distance","opponent_king_corner","own_rook_edge_distance","own_rook_corner","opponent_rook_edge_distance","opponent_rook_corner","kings_distance","kings_aligned","kings_clear_ray","own_king_rook_distance","own_king_rook_aligned","own_king_rook_clear_ray","opponent_king_rook_distance","opponent_king_rook_aligned","opponent_king_rook_clear_ray","own_king_enemy_rook_distance","own_king_enemy_rook_aligned","own_king_enemy_rook_clear_ray","opponent_king_enemy_rook_distance","opponent_king_enemy_rook_aligned","opponent_king_enemy_rook_clear_ray","rooks_distance","rooks_aligned","rooks_clear_ray","in_check","legal_move_count","can_remove_opponent_rook","can_remove_own_rook","can_give_check","can_mate","can_stalemate"],"meaning":"White cannot lose from any legal state where this predicate is true. At a White turn select any legal successor for which it is true.","draw_rule":"Stalemate or infinite play draws. No castling or draw-clock state.","leaf_ids":{"0":false,"1":true},"tree_nodes_before_sharing":131},"5":{"format":"mini-rook-safety-dag-v1","board":5,"root":262,"nodes":[[21,0,1,0],[30,11,0,1],[16,0,1,3],[3,0,1,4],[17,2,5,1],[18,0,1,0],[20,2,7,0],[5,0,1,8],[3,0,9,1],[31,0,10,1],[12,0,6,11],[26,2,1,12],[27,0,0,1],[26,1,14,1],[30,9,1,15],[20,1,1,0],[26,1,1,17],[31,0,18,1],[15,0,16,19],[4,0,13,20],[11,2,21,1],[14,2,1,22],[20,3,0,1],[26,2,1,24],[16,0,1,25],[7,0,26,1],[15,0,1,0],[17,3,27,28],[26,3,29,0],[30,6,1,30],[0,0,23,31],[14,2,1,0],[17,2,0,1],[14,2,1,34],[15,0,1,35],[19,0,36,17],[17,1,1,0],[26,2,38,1],[14,3,1,39],[17,2,40,1],[4,0,7,41],[9,0,42,1],[5,0,1,43],[30,2,44,1],[30,1,37,45],[27,0,46,0],[26,1,33,47],[31,0,48,1],[12,0,0,1],[17,2,1,50],[7,0,0,1],[17,3,52,0],[15,0,51,53],[26,1,0,54],[11,2,55,1],[26,3,56,0],[30,3,0,1],[10,0,58,1],[5,1,59,0],[4,0,60,1],[30,1,0,61],[3,0,62,0],[16,0,63,0],[20,3,64,0],[30,5,65,1],[11,2,66,0],[14,3,0,1],[26,3,1,68],[12,0,67,69],[14,2,57,70],[28,0,71,1],[20,2,49,72],[22,0,32,73],[18,0,0,1],[17,3,75,1],[30,2,1,76],[20,2,1,77],[3,0,1,78],[15,0,1,79],[14,2,1,80],[25,0,1,81],[14,1,1,0],[17,2,1,83],[16,0,0,1],[33,0,1,85],[11,2,86,1],[3,0,87,1],[0,0,1,88],[13,0,1,89],[17,2,1,90],[30,1,84,91],[20,2,1,14],[30,1,93,1],[3,0,0,1],[14,3,95,1],[12,0,96,1],[26,2,1,97],[17,1,98,1],[30,6,99,1],[30,4,1,0],[15,0,101,52],[30,8,1,0],[3,0,1,103],[19,0,102,104],[30,11,105,1],[17,2,106,1],[26,2,1,107],[11,2,0,1],[3,0,109,1],[17,2,1,110],[33,0,1,111],[12,0,108,112],[20,2,100,113],[23,2,114,1],[26,1,1,0],[23,2,116,1],[21,0,115,117],[0,0,94,118],[14,2,92,119],[5,0,82,120],[26,2,1,0],[26,3,122,1],[30,1,123,0],[31,0,124,1],[20,1,1,125],[30,2,126,1],[30,11,17,1],[20,2,0,1],[14,3,1,0],[26,3,130,0],[20,2,1,131],[30,7,129,132],[19,0,128,133],[30,7,38,1],[13,0,134,135],[15,0,136,1],[30,6,1,137],[0,0,127,138],[5,1,121,139],[26,1,7,1],[30,1,0,1],[20,3,142,0],[26,2,1,143],[23,2,144,1],[20,2,1,145],[22,0,141,146],[31,0,147,1],[17,1,1,148],[14,3,1,149],[19,0,0,1],[30,9,0,1],[25,0,152,1],[26,1,151,153],[12,0,154,1],[20,2,1,155],[7,0,156,1],[16,0,157,0],[21,0,158,116],[14,2,1,159],[23,2,160,1],[15,0,1,116],[16,0,1,0],[26,1,0,163],[9,0,0,164],[14,2,1,165],[20,2,162,166],[24,0,167,1],[5,1,161,168],[0,0,150,169],[7,0,1,0],[13,0,171,1],[18,0,1,172],[33,0,1,0],[0,0,173,174],[22,0,175,14],[17,2,170,176],[26,2,3,1],[17,2,52,0],[23,3,179,1],[17,1,178,180],[19,0,1,17],[26,2,182,0],[13,0,183,1],[14,2,1,184],[15,0,181,185],[30,10,177,186],[23,2,0,1],[17,2,188,1],[9,0,189,1],[12,0,1,0],[30,14,191,0],[14,3,190,192],[15,0,0,1],[17,3,193,194],[26,1,195,1],[30,12,1,196],[26,2,0,1],[16,0,198,1],[30,15,197,199],[7,0,24,0],[20,2,1,201],[13,0,202,1],[26,1,203,2],[26,51,14,1],[30,6,205,1],[17,1,1,206],[30,5,0,207],[16,0,204,208],[10,0,0,1],[30,4,210,1],[9,0,1,0],[14,3,211,212],[26,1,213,1],[23,2,209,214],[14,2,1,215],[11,3,216,1],[25,0,200,217],[11,2,187,218],[4,0,140,219],[23,1,74,220],[30,0,2,221],[0,0,1,0],[34,0,222,223],[26,51,0,1],[8,0,224,225],[35,0,0,1],[34,0,1,0],[8,0,228,0],[23,1,227,229],[3,0,52,1],[19,0,231,1],[9,1,232,163],[4,0,233,0],[30,7,1,234],[7,-1,0,235],[1,0,1,0],[30,7,1,237],[17,1,236,238],[26,1,227,239],[8,0,240,0],[9,0,0,1],[17,2,242,1],[3,0,1,243],[16,0,1,244],[26,1,163,245],[8,0,246,0],[1,0,247,0],[30,10,241,248],[13,0,0,38],[35,0,0,250],[28,0,249,251],[17,2,1,0],[7,0,253,0],[26,2,254,0],[27,0,1,0],[15,0,255,256],[35,0,0,257],[20,1,252,258],[17,51,259,1],[14,1,230,260],[32,0,226,261]],"feature_names":["opponent_to_move","own_rook_missing","opponent_rook_missing","own_king_edge_distance","own_king_corner","opponent_king_edge_distance","opponent_king_corner","own_rook_edge_distance","own_rook_corner","opponent_rook_edge_distance","opponent_rook_corner","kings_distance","kings_aligned","kings_clear_ray","own_king_rook_distance","own_king_rook_aligned","own_king_rook_clear_ray","opponent_king_rook_distance","opponent_king_rook_aligned","opponent_king_rook_clear_ray","own_king_enemy_rook_distance","own_king_enemy_rook_aligned","own_king_enemy_rook_clear_ray","opponent_king_enemy_rook_distance","opponent_king_enemy_rook_aligned","opponent_king_enemy_rook_clear_ray","rooks_distance","rooks_aligned","rooks_clear_ray","in_check","legal_move_count","can_remove_opponent_rook","can_remove_own_rook","can_give_check","can_mate","can_stalemate"],"meaning":"White cannot lose from any legal state where this predicate is true. At a White turn select any legal successor for which it is true.","draw_rule":"Stalemate or infinite play draws. No castling or draw-clock state.","leaf_ids":{"0":false,"1":true},"tree_nodes_before_sharing":565}};
+const STATS={4:{states:42552,edges:225120,safe:25380,decisions:60},5:{states:352432,edges:2765312,safe:231632,decisions:261}};
+let n,rules,cert,human,computer,s,selected=null,history=[],logs=[],seen=new Map(),stopped=false,busy=false,epoch=0;
+const $=id=>document.getElementById(id);
+const name=p=>String.fromCharCode(97+p%n)+(Math.floor(p/n)+1);
+function terminal(){const ms=rules.moves(s);if(!ms.length)return rules.attacked(s,s[4])?`${s[4]===0?'Black':'White'} wins by checkmate.`:'Draw by stalemate.';if((seen.get(s.join(','))||0)>=3)return 'Draw by repetition (demo convention).';return null;}
+function render(){
+ const ms=rules.moves(s),piece=selected===null?-1:[2*human,2*human+1].find(i=>s[i]===selected),targets=new Set(piece===undefined||piece<0?[]:ms.filter(t=>t[piece]!==s[piece]).map(t=>t[piece]));
+ $('board').style.setProperty('--n',n);$('board').innerHTML='';
+ for(let y=n-1;y>=0;y--)for(let x=0;x<n;x++){
+  const p=y*n+x,b=document.createElement('button'),i=s.slice(0,4).indexOf(p);b.className='square'+((x+y)%2===0?' dark':'')+(i>=0?(i<2?' whitepiece':' blackpiece'):'')+(p===selected?' selected':'')+(targets.has(p)?' target':'');
+  b.setAttribute('aria-label',name(p)+(i>=0?' '+['White king','White rook','Black king','Black rook'][i]:''));b.innerHTML=(i>=0?['♔','♖','♚','♜'][i]:'')+`<span class="coordinate">${name(p)}</span>`;b.onclick=()=>click(p);$('board').appendChild(b);
+ }
+ const end=terminal();stopped=!!end;$('status').textContent=end||`${s[4]===0?'White':'Black'} to move${rules.attacked(s,s[4])?' — check':''}. ${s[4]===human?'Your turn.':'Certificate policy’s turn.'}`;
+ const inside=MiniRook.safe(rules,cert,s,computer);$('badge').textContent=inside?'Engine is inside its certified safe region':'Outside certified region';
+ $('log').textContent=logs.join('\n')||'No moves yet.';$('log').scrollTop=$('log').scrollHeight;
+ const q=STATS[n];$('metrics').innerHTML=`<b>${q.states.toLocaleString()}</b> legal states<br><b>${q.edges.toLocaleString()}</b> legal transitions<br><b>${q.safe.toLocaleString()}</b> states in this invariant<br><b>${q.decisions}</b> shared decision nodes + 2 terminals<br><b>0</b> failed verification obligations`;
+}
+function apply(t){
+ const old=s.slice(),side=s[4],pi=t[2*side]!==s[2*side]?2*side:2*side+1,cap=t[2*(1-side)+1]!==s[2*(1-side)+1];
+ history.push({s:old,logs:logs.length,seen:new Map(seen)});logs.push(`${logs.length+1}. ${side===0?'W':'B'} ${pi%2?'R':'K'}${name(old[pi])}${cap?'×':'–'}${name(t[pi])}`);
+ s=t.slice();seen.set(s.join(','),(seen.get(s.join(','))||0)+1);selected=null;render();
+}
+function schedule(){if(stopped||s[4]!==computer)return;busy=true;const e=epoch;setTimeout(()=>{if(e!==epoch)return;try{const t=MiniRook.choose(rules,cert,s,computer);if(t)apply(t);}catch(err){$('status').textContent=err.message;stopped=true;}busy=false;},80);}
+function click(p){
+ if(stopped||busy||s[4]!==human)return;
+ if(selected!==null){const pi=[2*human,2*human+1].find(i=>s[i]===selected),t=rules.moves(s).find(t=>t[pi]===p&&t[pi]!==s[pi]);if(t){apply(t);schedule();return;}}
+ selected=[s[2*human],s[2*human+1]].includes(p)?p:null;render();
+}
+function reset(){epoch++;n=+$('size').value;human=+$('human').value;computer=1-human;rules=new MiniRook.Rules(n);cert=CERTS[n];s=[0,1,n*n-1,n*n-2,0];selected=null;history=[];logs=[];seen=new Map([[s.join(','),1]]);stopped=false;busy=false;render();schedule();}
+$('new').onclick=reset;$('size').onchange=reset;$('human').onchange=reset;
+$('undo').onclick=()=>{epoch++;busy=false;if(!history.length)return;let h;do{h=history.pop();s=h.s;logs.length=h.logs;seen=h.seen;}while(history.length&&s[4]!==human);selected=null;render();schedule();};
+reset();
+</script></body></html>

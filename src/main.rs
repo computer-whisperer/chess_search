@@ -1,4 +1,6 @@
 mod board;
+mod cert;
+mod certs;
 mod narrow;
 mod retro;
 
@@ -9,7 +11,7 @@ use std::time::Instant;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  chess_search retro [N] [MATERIAL]   solve by retrograde analysis (default 4 KRvK)\n  chess_search narrow [N] [MATERIAL] [--no-memo]   superposed (narrowing) solve, verified against the table"
+        "usage:\n  chess_search retro [N] [MATERIAL]   solve by retrograde analysis (default 4 KRvK)\n  chess_search narrow [N] [MATERIAL] [--no-memo]   superposed (narrowing) solve, verified against the table\n  chess_search cert [N] [--cert4]   check the codex_idea nonloss certificate for KRvKR on NxN (--cert4: apply the 4x4 certificate)"
     );
     std::process::exit(2)
 }
@@ -18,7 +20,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("retro");
     let n: u8 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(4);
-    let material = args.get(2).map(String::as_str).unwrap_or("KRvK");
+    let material = if cmd == "cert" { "KRvKR" } else { args.get(2).map(String::as_str).unwrap_or("KRvK") };
     let setup = match Setup::parse(n, material) {
         Ok(s) => s,
         Err(e) => {
@@ -91,6 +93,33 @@ fn main() {
                     println!("verify: FAILED: {e}");
                     std::process::exit(1);
                 }
+            }
+        }
+        "cert" => {
+            let cert: &certs::Cert = if args.iter().any(|a| a == "--cert4") || n == 4 {
+                &certs::WEAK4
+            } else if n == 5 {
+                &certs::WEAK5
+            } else {
+                eprintln!("no certificate for {n}x{n}; use --cert4 to transfer the 4x4 one");
+                std::process::exit(2);
+            };
+            let table = Table::solve(setup.clone());
+            let st = table.stats();
+            println!("{} on {}x{}: {} legal positions; certificate for {}x{} ({} decision nodes, root {})",
+                setup.name(), n, n, st.legal, cert.board, cert.board, cert.nodes.len(), cert.root);
+            for protected in [Color::White, Color::Black] {
+                let t0 = Instant::now();
+                let r = cert::verify(&table, cert, protected);
+                println!("protected {:?} ({:.2?}): root in invariant: {}; safe states {} of {} nonlosing ({:.1}%)",
+                    protected, t0.elapsed(), r.root_in_invariant, r.safe_states, r.nonlosing_in_table,
+                    100.0 * r.safe_states as f64 / r.nonlosing_in_table as f64);
+                println!("  obligations: {} own-turn ({} candidate edges), {} opponent-turn ({} edges)",
+                    r.own_turn_obligations, r.own_candidate_edges, r.opponent_turn_obligations, r.opponent_edges);
+                println!("  violations: {} (mated inside {}, no preserving move {}, opponent escapes {} edges from {} states); unsound vs table: {}",
+                    r.violations(), r.mated_inside, r.no_preserving_move, r.opponent_escapes, r.opponent_escape_states, r.unsound_vs_table);
+                println!("  strategy graph: {} states, {} edges, {} own checkmates, {} stuck",
+                    r.strategy_states, r.strategy_edges, r.strategy_own_checkmates, r.strategy_stuck);
             }
         }
         _ => usage(),
@@ -223,4 +252,28 @@ mod tests {
         let table = Table::solve(setup);
         assert_eq!(table.get(&p), Val::Loss(0));
     }
+    /// The codex_idea 4x4 certificate, checked against the numbers in
+    /// codex_idea/mini_rook_chess_results.json (verification4).
+    #[test]
+    fn codex_certificate_weak4_matches_reported_counts_and_table() {
+        let setup = Setup::parse(4, "KRvKR").unwrap();
+        let table = Table::solve(setup);
+        let w = cert::verify(&table, &certs::WEAK4, Color::White);
+        assert_eq!(w.legal_states, 42552);
+        assert!(w.root_in_invariant);
+        assert_eq!(w.safe_states, 25380);
+        assert_eq!(w.own_turn_obligations, 15464);
+        assert_eq!(w.opponent_turn_obligations, 9916);
+        assert_eq!(w.own_candidate_edges, 88696);
+        assert_eq!(w.opponent_edges, 48324);
+        assert_eq!(w.violations(), 0);
+        assert_eq!(w.unsound_vs_table, 0);
+        assert_eq!((w.strategy_states, w.strategy_edges, w.strategy_own_checkmates), (10018, 23891, 0));
+        let b = cert::verify(&table, &certs::WEAK4, Color::Black);
+        assert!(b.root_in_invariant);
+        assert_eq!(b.violations(), 0);
+        assert_eq!(b.unsound_vs_table, 0);
+        assert_eq!((b.strategy_states, b.strategy_edges, b.strategy_own_checkmates), (10704, 25451, 0));
+    }
+
 }

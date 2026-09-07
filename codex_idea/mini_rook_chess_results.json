@@ -1,0 +1,494 @@
+{
+  "variant": "king and rook per side on a square board; no castling; stalemate and infinite play draw",
+  "initial_position": "White Ka1 Rb1; Black K at upper-right corner and R immediately to its left; White to move",
+  "baseline4": {
+    "board": 4,
+    "states": 42552,
+    "edges": 225120,
+    "wins_to_move": 18032,
+    "draws": 20880,
+    "losses_to_move": 3640,
+    "terminal_mates": 320,
+    "stalemates": 72,
+    "max_dtm_plies": 17,
+    "build_seconds": 0.0110325,
+    "solve_seconds": 0.00205985,
+    "retrograde_predecessor_visits": 111984
+  },
+  "baseline5": {
+    "board": 5,
+    "states": 352432,
+    "edges": 2765312,
+    "wins_to_move": 141576,
+    "draws": 190824,
+    "losses_to_move": 20032,
+    "terminal_mates": 992,
+    "stalemates": 88,
+    "max_dtm_plies": 23,
+    "build_seconds": 0.100638,
+    "solve_seconds": 0.0194242,
+    "retrograde_predecessor_visits": 1218536
+  },
+  "initial4": {
+    "feature_cells": 5220,
+    "fixedpoint_rounds": 18,
+    "removed_cells_by_round": [
+      20,
+      75,
+      14,
+      141,
+      35,
+      268,
+      20,
+      112,
+      31,
+      151,
+      66,
+      245,
+      30,
+      73,
+      7,
+      26,
+      2,
+      2
+    ],
+    "safe_states": 31716,
+    "decision_tree_nodes": 189,
+    "seconds": 0.3553041390000544
+  },
+  "weak4": {
+    "seconds": 12.668289223000102,
+    "candidate_evaluations": 216,
+    "selected_filters": [
+      "own_rook_corner <= 0"
+    ],
+    "nodes": 131,
+    "safe_states": 25380
+  },
+  "synthesis5": {
+    "broad": {
+      "safe_states": 271188,
+      "tree_nodes": 607,
+      "abstract_cells": 39798,
+      "fixedpoint_rounds": 18,
+      "root_checks": [
+        true,
+        true
+      ]
+    },
+    "restricted": {
+      "safe_states": 231632,
+      "tree_nodes": 565,
+      "extra_fixedpoint_rounds": 3,
+      "root_checks": [
+        true,
+        true
+      ]
+    },
+    "seconds": 10.664733946999945
+  },
+  "certificates": {
+    "certificate_full4": {
+      "tree_nodes": 189,
+      "unique_decision_nodes": 89,
+      "shared_terminal_nodes": 2,
+      "binary_parameter_bytes": 543,
+      "json_bytes": 5893
+    },
+    "certificate_weak4": {
+      "tree_nodes": 131,
+      "unique_decision_nodes": 60,
+      "shared_terminal_nodes": 2,
+      "binary_parameter_bytes": 369,
+      "json_bytes": 4444
+    },
+    "certificate_broad5": {
+      "tree_nodes": 607,
+      "unique_decision_nodes": 276,
+      "shared_terminal_nodes": 2,
+      "binary_parameter_bytes": 1665,
+      "json_bytes": 15431
+    },
+    "certificate_weak5": {
+      "tree_nodes": 565,
+      "unique_decision_nodes": 261,
+      "shared_terminal_nodes": 2,
+      "binary_parameter_bytes": 1575,
+      "json_bytes": 14650
+    }
+  },
+  "verification4": {
+    "certificate": "certificate_weak4.json",
+    "board": 4,
+    "legal_states": 42552,
+    "legal_edges": 225120,
+    "safe_states": 25380,
+    "own_turn_obligations": 15464,
+    "opponent_turn_obligations": 9916,
+    "own_candidate_edges": 88696,
+    "universally_checked_opponent_edges": 48324,
+    "roots_in_invariant": [
+      true,
+      true
+    ],
+    "violation_count": 0,
+    "first_violations": [],
+    "reachable_strategy_graphs": [
+      {
+        "states": 10018,
+        "edges": 23891,
+        "own_checkmates": 0
+      },
+      {
+        "states": 10704,
+        "edges": 25451,
+        "own_checkmates": 0
+      }
+    ],
+    "differential_check": "Every legal state and every legal transition matched.",
+    "independent_rules_seconds": 0.8342644180000889,
+    "total_verification_seconds": 1.4198605459999953,
+    "accepted": true
+  },
+  "verification5": {
+    "certificate": "certificate_weak5.json",
+    "board": 5,
+    "legal_states": 352432,
+    "legal_edges": 2765312,
+    "safe_states": 231632,
+    "own_turn_obligations": 141640,
+    "opponent_turn_obligations": 89992,
+    "own_candidate_edges": 1165416,
+    "universally_checked_opponent_edges": 696052,
+    "roots_in_invariant": [
+      true,
+      true
+    ],
+    "violation_count": 0,
+    "first_violations": [],
+    "reachable_strategy_graphs": [
+      {
+        "states": 109430,
+        "edges": 355055,
+        "own_checkmates": 0
+      },
+      {
+        "states": 109758,
+        "edges": 356118,
+        "own_checkmates": 0
+      }
+    ],
+    "differential_check": "Every legal state and every legal transition matched.",
+    "independent_rules_seconds": 10.526361208000026,
+    "total_verification_seconds": 17.586063077000063,
+    "accepted": true
+  },
+  "transfer4to5": {
+    "certificate": "certificate_weak4.json",
+    "board": 5,
+    "legal_states": 352432,
+    "legal_edges": 2765312,
+    "safe_states": 228648,
+    "own_turn_obligations": 141892,
+    "opponent_turn_obligations": 86756,
+    "own_candidate_edges": 1167664,
+    "universally_checked_opponent_edges": 661224,
+    "roots_in_invariant": [
+      true,
+      true
+    ],
+    "violation_count": 1668,
+    "first_violations": [
+      {
+        "kind": "no_preserving_move",
+        "state": [
+          0,
+          3,
+          7,
+          12,
+          0
+        ]
+      },
+      {
+        "kind": "no_preserving_move",
+        "state": [
+          0,
+          3,
+          7,
+          14,
+          0
+        ]
+      },
+      {
+        "kind": "no_preserving_move",
+        "state": [
+          0,
+          3,
+          7,
+          16,
+          0
+        ]
+      }
+    ],
+    "reachable_strategy_graphs": [],
+    "differential_check": null,
+    "independent_rules_seconds": 10.156099580000046,
+    "total_verification_seconds": 15.812657512999976,
+    "accepted": false
+  },
+  "runtime_tests": {
+    "states_compared": 2004,
+    "checked_features_per_state": 36,
+    "legal_move_sets": "matched",
+    "certificate_membership": "matched",
+    "policy_moves_checked": 743
+  },
+  "browser_tests": {
+    "page_errors": [],
+    "cases": [
+      {
+        "board": "4",
+        "human": "0",
+        "human_turns": 6,
+        "status": "Black wins by checkmate."
+      },
+      {
+        "board": "4",
+        "human": "1",
+        "human_turns": 12,
+        "status": "Black to move \u2014 check. Your turn."
+      },
+      {
+        "board": "5",
+        "human": "0",
+        "human_turns": 12,
+        "status": "White to move. Your turn."
+      },
+      {
+        "board": "5",
+        "human": "1",
+        "human_turns": 12,
+        "status": "Black to move. Your turn."
+      }
+    ]
+  },
+  "reachable_transfer_counterexamples": [
+    {
+      "root": [
+        0,
+        1,
+        24,
+        23,
+        0
+      ],
+      "failure": "Policy has no legal invariant-preserving move",
+      "states_discovered": 2134,
+      "counterexample_plies": 10,
+      "path": [
+        [
+          0,
+          1,
+          24,
+          23,
+          0
+        ],
+        [
+          0,
+          2,
+          24,
+          23,
+          1
+        ],
+        [
+          0,
+          2,
+          18,
+          23,
+          0
+        ],
+        [
+          0,
+          1,
+          18,
+          23,
+          1
+        ],
+        [
+          0,
+          1,
+          12,
+          23,
+          0
+        ],
+        [
+          0,
+          2,
+          12,
+          23,
+          1
+        ],
+        [
+          0,
+          2,
+          8,
+          23,
+          0
+        ],
+        [
+          0,
+          1,
+          8,
+          23,
+          1
+        ],
+        [
+          0,
+          1,
+          8,
+          24,
+          0
+        ],
+        [
+          0,
+          6,
+          8,
+          24,
+          1
+        ],
+        [
+          0,
+          6,
+          12,
+          24,
+          0
+        ]
+      ],
+      "protected_player_reference_values_along_path": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "root": [
+        24,
+        23,
+        0,
+        1,
+        1
+      ],
+      "failure": "Policy reached a state outside its claimed invariant",
+      "states_discovered": 4315,
+      "counterexample_plies": 9,
+      "path": [
+        [
+          24,
+          23,
+          0,
+          1,
+          1
+        ],
+        [
+          24,
+          23,
+          5,
+          1,
+          0
+        ],
+        [
+          18,
+          23,
+          5,
+          1,
+          1
+        ],
+        [
+          18,
+          23,
+          11,
+          1,
+          0
+        ],
+        [
+          13,
+          23,
+          11,
+          1,
+          1
+        ],
+        [
+          13,
+          23,
+          11,
+          0,
+          0
+        ],
+        [
+          8,
+          23,
+          11,
+          0,
+          1
+        ],
+        [
+          8,
+          23,
+          17,
+          0,
+          0
+        ],
+        [
+          8,
+          13,
+          17,
+          0,
+          1
+        ],
+        [
+          8,
+          13,
+          17,
+          5,
+          0
+        ]
+      ],
+      "protected_player_reference_values_along_path": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "no_outcome_audit": {
+    "outcome_file_present": false,
+    "distance_file_present": false,
+    "safe_states": 25380,
+    "tree_nodes": 131,
+    "both_roots": true,
+    "closure_violations": 0,
+    "note": "Recomputed abstraction and the discovered restriction with outcome arrays unavailable. This is not another full 118-filter search."
+  },
+  "clean_reproduction4": {
+    "python": "3.13.5 (main, Jul 15 2026, 20:25:40) [GCC 14.2.0]",
+    "numpy": "2.3.5",
+    "sklearn": "1.8.0",
+    "platform": "Linux-6.18.35-x86_64-with-glibc2.41",
+    "compiler": "/usr/bin/g++",
+    "elapsed_seconds": 23.608997044000034
+  }
+}
