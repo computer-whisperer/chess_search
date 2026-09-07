@@ -6,6 +6,7 @@
 //! it actually consulted*. The leaf count against the position count
 //! measures how far verification can get without enumerating the game.
 
+use crate::absmove;
 use crate::board::*;
 use crate::cert::{self, Roles};
 use crate::certs::Cert;
@@ -111,24 +112,232 @@ fn between_mask(setup: &Setup, p: Sq, q: Sq) -> u64 {
     mask
 }
 
+/// How much of the check runs on regions rather than on pinned positions.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// Everything through the recording oracle: every consulted piece is pinned.
+    Pinning,
+    /// Geometric features decided by domain splits; moves still generated
+    /// through the recording oracle.
+    Abstract,
+    /// Domain splits for features, legality and move generation; the
+    /// obligations refine one disjoint partition move by move.
+    AbstractMoves,
+    /// As `AbstractMoves`, but every candidate move is analysed on the whole
+    /// leaf independently, giving an overlapping cover of witnesses (own
+    /// turn) or a list of per-move violations (opponent turn). The cost is
+    /// the number of cases, compared against the concrete edge count.
+    Cover,
+}
+
 pub struct Sym<'a> {
     pub setup: &'a Setup,
     pub cert: &'a Cert,
     pub roles: Roles,
     pub queries: Cell<u64>,
     pub forks: Cell<u64>,
-    /// Decide geometric features abstractly (domain splits) instead of
-    /// through the recording oracle (pins).
-    pub abstract_eval: bool,
+    /// Cover mode: decided move cases plus membership classifications.
+    pub cases: Cell<u64>,
+    pub witnesses: Cell<u64>,
+    pub mode: Mode,
 }
 
 impl<'a> Sym<'a> {
-    pub fn new(setup: &'a Setup, cert: &'a Cert, protected: Color, abstract_eval: bool) -> Sym<'a> {
-        Sym { setup, cert, roles: Roles::new(setup, protected), queries: Cell::new(0), forks: Cell::new(0), abstract_eval }
+    pub fn new(setup: &'a Setup, cert: &'a Cert, protected: Color, mode: Mode) -> Sym<'a> {
+        Sym { setup, cert, roles: Roles::new(setup, protected), queries: Cell::new(0), forks: Cell::new(0), cases: Cell::new(0), witnesses: Cell::new(0), mode }
     }
 
     fn member(&self, r: Region) -> Parts {
-        if self.abstract_eval { self.classify_abs(r) } else { self.classify(r) }
+        if self.mode == Mode::Pinning { self.classify(r) } else { self.classify_abs(r) }
+    }
+
+    /// The legal part of `r` (side not to move not in check).
+    pub fn legal_by_mode(&self, r: Region) -> Vec<Region> {
+        if self.mode != Mode::AbstractMoves {
+            return self.legal(r);
+        }
+        let king = self.setup.king_slot(r.stm.flip());
+        match (absmove::View { r: &r, mover: None, captured: None }).attacked(self.setup, king, r.stm) {
+            absmove::Step::Decided(true) => vec![],
+            absmove::Step::Decided(false) => vec![r],
+            absmove::Step::Split(children) => children.into_iter().flat_map(|c| self.legal_by_mode(c)).collect(),
+        }
+    }
+
+    fn exists_by_mode(&self, r: Region) -> Parts {
+        match self.mode {
+            Mode::AbstractMoves => self.exists_safe_abs(r),
+            Mode::Cover => self.exists_cover(r),
+            _ => self.exists_safe(r),
+        }
+    }
+
+    fn all_by_mode(&self, r: Region) -> Parts {
+        match self.mode {
+            Mode::AbstractMoves => self.all_safe_abs(r),
+            Mode::Cover => self.all_cover(r),
+            _ => self.all_safe(r),
+        }
+    }
+
+    /// Own turn as an overlapping cover: for each candidate move on the whole
+    /// leaf, the sub-regions where it is legal and enters the safe region are
+    /// witnesses. Positions under no witness are then settled concretely
+    /// (stalemate or violation) and returned as singletons, so the parts
+    /// still cover the leaf exactly for the caller's accounting.
+    pub fn exists_cover(&self, r: Region) -> Parts {
+        let setup = self.setup;
+        let mut witnesses: Vec<Region> = Vec::new();
+        for (s, t) in self.candidates(r.stm) {
+            for (case, legal) in absmove::can_move(setup, r.clone(), s, t) {
+                self.cases.set(self.cases.get() + 1);
+                let Some(capture) = legal else { continue };
+                let succ = absmove::play(setup, &case, s, t, capture);
+                for (child, ok) in self.member(succ) {
+                    self.cases.set(self.cases.get() + 1);
+                    if ok {
+                        witnesses.extend(absmove::pullback(setup, &case, &child, s, t, capture));
+                    }
+                }
+            }
+        }
+        self.witnesses.set(self.witnesses.get() + witnesses.len() as u64);
+        // Coverage accounting (concrete): the disjoint parts reported are the
+        // witnesses made disjoint by first-witness ownership, plus singletons.
+        let mut out: Vec<(Region, bool)> = Vec::new();
+        let mut owned: Vec<Vec<Position>> = vec![Vec::new(); witnesses.len()];
+        for p in r.positions() {
+            match witnesses.iter().position(|w| contains(w, &p)) {
+                Some(i) => owned[i].push(p),
+                None => {
+                    let ok = legal_moves(setup, &p, p.stm).unwrap().is_empty() && !in_check(setup, &p, p.stm).unwrap();
+                    out.push((pin_all(&p), ok));
+                }
+            }
+        }
+        for (w, ps) in witnesses.into_iter().zip(owned) {
+            if ps.is_empty() {
+                continue;
+            }
+            if ps.len() == w.positions().len() {
+                out.push((w, true));
+            } else {
+                out.extend(ps.iter().map(|p| (pin_all(p), true)));
+            }
+        }
+        out
+    }
+
+    /// Opponent turn as independent per-move checks: each candidate move's
+    /// legal cases whose successor leaves the safe region are violations.
+    pub fn all_cover(&self, r: Region) -> Parts {
+        let setup = self.setup;
+        let mut bad: Vec<Region> = Vec::new();
+        for (s, t) in self.candidates(r.stm) {
+            for (case, legal) in absmove::can_move(setup, r.clone(), s, t) {
+                self.cases.set(self.cases.get() + 1);
+                let Some(capture) = legal else { continue };
+                let succ = absmove::play(setup, &case, s, t, capture);
+                for (child, ok) in self.member(succ) {
+                    self.cases.set(self.cases.get() + 1);
+                    if !ok {
+                        bad.extend(absmove::pullback(setup, &case, &child, s, t, capture));
+                    }
+                }
+            }
+        }
+        if bad.is_empty() {
+            return vec![(r, true)];
+        }
+        r.positions().into_iter().map(|p| { let b = bad.iter().any(|b| contains(b, &p)); (pin_all(&p), !b) }).collect()
+    }
+
+    fn candidates(&self, stm: Color) -> Vec<(SlotId, Sq)> {
+        let mut out = Vec::new();
+        for s in self.setup.slots_of(stm) {
+            for t in 0..self.setup.area() as Sq {
+                out.push((s, t));
+            }
+        }
+        out
+    }
+
+    /// Protected side to move, with abstract moves: does some legal move
+    /// enter the safe region? Regions never touched by a legal move are
+    /// stalemates (fine) or checkmates (violations).
+    pub fn exists_safe_abs(&self, r: Region) -> Parts {
+        let setup = self.setup;
+        let mut out = Vec::new();
+        // (region, had a legal move)
+        let mut remaining: Vec<(Region, bool)> = vec![(r, false)];
+        for (s, t) in self.candidates(remaining[0].0.stm) {
+            let mut next = Vec::new();
+            for (sub, had) in remaining {
+                for (case, legal) in absmove::can_move(setup, sub, s, t) {
+                    let Some(capture) = legal else {
+                        next.push((case, had));
+                        continue;
+                    };
+                    let succ = absmove::play(setup, &case, s, t, capture);
+                    for (child, ok) in self.member(succ) {
+                        if let Some(back) = absmove::pullback(setup, &case, &child, s, t, capture) {
+                            if ok { out.push((back, true)) } else { next.push((back, true)) }
+                        }
+                    }
+                }
+            }
+            remaining = next;
+            if remaining.is_empty() {
+                break;
+            }
+        }
+        for (sub, had) in remaining {
+            if had {
+                out.push((sub, false));
+                continue;
+            }
+            // No legal move at all: stalemate unless in check.
+            let king = setup.king_slot(sub.stm);
+            let mut stack = vec![sub];
+            while let Some(q) = stack.pop() {
+                match (absmove::View { r: &q, mover: None, captured: None }).attacked(setup, king, q.stm.flip()) {
+                    absmove::Step::Decided(mated) => out.push((q, !mated)),
+                    absmove::Step::Split(children) => stack.extend(children),
+                }
+            }
+        }
+        out
+    }
+
+    /// Opponent to move, with abstract moves: does every legal move stay in
+    /// the safe region?
+    pub fn all_safe_abs(&self, r: Region) -> Parts {
+        let setup = self.setup;
+        let mut out = Vec::new();
+        let mut remaining = vec![r];
+        for (s, t) in self.candidates(remaining[0].stm) {
+            let mut next = Vec::new();
+            for sub in remaining {
+                for (case, legal) in absmove::can_move(setup, sub, s, t) {
+                    let Some(capture) = legal else {
+                        next.push(case);
+                        continue;
+                    };
+                    let succ = absmove::play(setup, &case, s, t, capture);
+                    for (child, ok) in self.member(succ) {
+                        if let Some(back) = absmove::pullback(setup, &case, &child, s, t, capture) {
+                            if ok { next.push(back) } else { out.push((back, false)) }
+                        }
+                    }
+                }
+            }
+            remaining = next;
+            if remaining.is_empty() {
+                break;
+            }
+        }
+        out.extend(remaining.into_iter().map(|s| (s, true)));
+        out
     }
 
     /// Run `f` against the region; on an undecided query, fork.
@@ -350,10 +559,17 @@ pub struct SymReport {
     pub violating_positions: usize,
     pub queries: u64,
     pub forks: u64,
+    /// Cover mode: decided move cases plus membership classifications, and
+    /// witness regions found.
+    pub cases: u64,
+    pub witnesses: u64,
     /// Cross-check against the concrete verifier: positions covered by
     /// several or no membership leaves, or classified differently.
     pub cover_errors: usize,
     pub mismatches: usize,
+    /// Obligation parts whose outcome disagrees with the concrete obligation
+    /// on some position they contain.
+    pub obligation_mismatches: usize,
     /// Legal positions whose membership walk consulted each feature
     /// (traced concretely on one representative per membership leaf).
     pub feature_positions: Vec<usize>,
@@ -367,9 +583,9 @@ pub struct SymReport {
 /// Check the certificate symbolically for one protected colour, and
 /// cross-check the membership partition against the concrete evaluation on
 /// every legal position of the table.
-pub fn verify(table: &Table, cert: &Cert, protected: Color, abstract_eval: bool) -> SymReport {
+pub fn verify(table: &Table, cert: &Cert, protected: Color, mode: Mode) -> SymReport {
     let setup = &table.setup;
-    let sym = Sym::new(setup, cert, protected, abstract_eval);
+    let sym = Sym::new(setup, cert, protected, mode);
     let mut rep = SymReport { protected: Some(protected), feature_positions: vec![0; cert::NFEAT], ..SymReport::default() };
     let mut seen: Vec<u8> = vec![0; table.vals.len()];
     for stm in [Color::White, Color::Black] {
@@ -417,20 +633,43 @@ pub fn verify(table: &Table, cert: &Cert, protected: Color, abstract_eval: bool)
                     (&mut rep.opp_leaves, &mut rep.opp_positions)
                 };
                 let mut covered = 0;
-                for legal in sym.legal(leaf) {
-                    let parts = if stm == protected { sym.exists_safe(legal) } else { sym.all_safe(legal) };
+                for legal in sym.legal_by_mode(leaf.clone()) {
+                    let parts = if stm == protected { sym.exists_by_mode(legal) } else { sym.all_by_mode(legal) };
                     for (part, ok) in parts {
                         *leaves += 1;
-                        let k = part.positions().len();
-                        covered += k;
+                        let pps = part.positions();
+                        covered += pps.len();
                         if !ok {
-                            rep.violating_positions += k;
+                            rep.violating_positions += pps.len();
+                        }
+                        // Per-position cross-check of the obligation outcome.
+                        for p in &pps {
+                            if concrete_obligation(setup, cert, p, &sym.roles) != ok {
+                                rep.obligation_mismatches += 1;
+                            }
                         }
                     }
                 }
                 *positions += covered;
                 if covered != ps.len() {
                     rep.cover_errors += 1;
+                    if std::env::var_os("CHESS_DEBUG").is_some() && rep.cover_errors <= 2 {
+                        eprintln!("cover error: leaf {:?} stm {:?} has {} legal positions, parts cover {}", leaf.dom, leaf.stm, ps.len(), covered);
+                        let mut seen_parts: Vec<Position> = Vec::new();
+                        for legal in sym.legal_by_mode(leaf.clone()) {
+                            eprintln!("  legal part {:?}", legal.dom);
+                            let parts = if stm == protected { sym.exists_by_mode(legal) } else { sym.all_by_mode(legal) };
+                            for (part, ok) in parts {
+                                eprintln!("    part {:?} -> {}", part.dom, ok);
+                                seen_parts.extend(part.positions());
+                            }
+                        }
+                        for p in &ps {
+                            if !seen_parts.contains(p) {
+                                eprintln!("  MISSING {:?}\n{}", p.sqs, p.render(setup));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -445,5 +684,37 @@ pub fn verify(table: &Table, cert: &Cert, protected: Color, abstract_eval: bool)
     }
     rep.queries = sym.queries.get();
     rep.forks = sym.forks.get();
+    rep.cases = sym.cases.get();
+    rep.witnesses = sym.witnesses.get();
     rep
+}
+
+fn contains(r: &Region, p: &Position) -> bool {
+    r.stm == p.stm
+        && r.dom.iter().zip(&p.sqs).all(|(d, sq)| match sq {
+            Some(sq) => d.has(*sq),
+            None => d.cap,
+        })
+}
+
+fn pin_all(p: &Position) -> Region {
+    Region {
+        dom: p.sqs.iter().map(|sq| sq.map_or(Dom::captured(), Dom::pinned)).collect(),
+        stm: p.stm,
+    }
+}
+
+/// The concrete obligation at `p` for the protected side: at its own turn,
+/// some legal move enters the region or it is stalemated; at the opponent's
+/// turn, every legal move stays in the region.
+fn concrete_obligation(setup: &Setup, cert: &Cert, p: &Position, roles: &Roles) -> bool {
+    let moves = legal_moves(setup, p, p.stm).unwrap();
+    if p.stm == roles.protected {
+        if moves.is_empty() {
+            return !in_check(setup, p, p.stm).unwrap();
+        }
+        moves.iter().any(|&mv| cert::safe(setup, cert, &p.play(mv), roles))
+    } else {
+        moves.iter().all(|&mv| cert::safe(setup, cert, &p.play(mv), roles))
+    }
 }

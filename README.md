@@ -220,15 +220,54 @@ it is nearly the whole nonlosing region:
 
 So the membership question — is this position in the invariant? — is now
 answered on 7 to 8 times fewer regions than positions, exactly and without
-enumeration. The obligations are not: they still run the ordinary move
-generator against the recording oracle, which must locate the mover
-(pinning the side to move) and then scans rays for the legality of every
-candidate move, and on these boards those scans reach the remaining
-pieces. The 0.992 on 5×5 is the first sign of an opponent piece that some
-scan never reaches. Closing this gap needs an *abstract move generator*: a
-move "king to t" applied to a whole region as a domain transformer (the
-preimage is the king's domain intersected with t's neighbours, the
-successor pins the king at t, legality splits the enemy rook's domain on
-the squares aligned with t), so that the obligation, like membership,
-becomes a computation on products of square-sets rather than on positions.
-That is the next experiment; it has not been built.
+enumeration.
+
+### Abstract move generation
+
+The obligations were the remaining enumeration: the ordinary move
+generator against the recording oracle must locate the mover and scan
+rays for legality. `src/absmove.rs` replaces it with a move generator on
+regions. A candidate move is a (slot, destination) pair applied to a whole
+region, which is split until "this slot can legally move to `t`" is
+decided everywhere: the mover's domain is narrowed to the origins that
+reach `t` (never pinned), other pieces are split on `t` for occupancy, a
+rook's blockers are split on the union of its paths, and legality after
+the move is decided by the same attack test as the features (adjacency
+split on the enemy king's domain; alignment split, then blockers, for the
+enemy rook). On the decided-yes parts the successor is again a product,
+and a sub-region of it pulls back exactly to a product. Every part is
+cross-checked position by position against the concrete obligation.
+
+Two ways to use it. `AbstractMoves` refines one disjoint partition of the
+leaf move by move, as before. `Cover` analyses every candidate move on the
+whole leaf independently, giving an overlapping cover by witness regions
+(own turn) or a list of per-move violation regions (opponent turn), and
+charges the number of cases against the concrete edge count.
+
+| board | own-turn leaves/position (Rec) | (AbstractMoves) | opponent-turn (Rec) | (AbstractMoves) | Cover: cases | concrete edges | witnesses per own-turn position |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 4×4 | 1.000 | 0.724 | 1.000 | 0.995 | 580,216 | 169,904 | 2.0 |
+| 5×5 | 0.992 | 0.822 | 0.996 | 0.882 | 6,181,194 | 2,162,432 | 2.2 |
+
+Exact on every run, and it does not pay. The disjoint partition cannot
+get coarse: for an "all replies" obligation the surviving region must be
+refined by the predicates of *every* candidate move, and the destinations
+of a king and a rook cover the board, so occupancy tests alone pin the
+other pieces. The overlapping cover avoids that but costs three times the
+concrete edges, because each candidate move needs its own case analysis
+whose size does not shrink with the leaf, and the leaves are small: 7 to
+8 positions on average, since all four pieces take part in the
+invariant's description. Symbolic obligation checking can only win when
+membership leaves are large, which needs pieces the invariant does not
+mention — the same condition the win-proof partition needed, reached from
+the other direction.
+
+Where that leaves the tweet argument: the drawn game's proof object is an
+inductive invariant and it *is* compressible (152 relational decisions
+for 42,552 positions here; 442 for 352,432), but discovering and checking
+it still touched every position in this project, and the only mechanism
+found for avoiding that — reasoning over regions — is limited by exactly
+the property that made the win-proof partition flat: on boards this small
+every piece matters to every proof step. Whether large boards with
+genuinely irrelevant material change that is the open experiment, and
+the region machinery here is what would run it.

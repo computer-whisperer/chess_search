@@ -1,3 +1,4 @@
+mod absmove;
 mod board;
 mod cert;
 mod certs;
@@ -8,6 +9,9 @@ mod synth;
 
 use board::*;
 use cert::NFEAT;
+use symcert::Mode;
+
+const MODES: [Mode; 4] = [Mode::Pinning, Mode::Abstract, Mode::AbstractMoves, Mode::Cover];
 use narrow::*;
 use retro::*;
 use std::time::Instant;
@@ -123,17 +127,17 @@ fn main() {
                     r.violations(), r.mated_inside, r.no_preserving_move, r.opponent_escapes, r.opponent_escape_states, r.unsound_vs_table);
                 println!("  strategy graph: {} states, {} edges, {} own checkmates, {} stuck",
                     r.strategy_states, r.strategy_edges, r.strategy_own_checkmates, r.strategy_stuck);
-                for abs in [false, true].into_iter().filter(|_| args.iter().any(|a| a == "--symbolic")) {
+                for mode in MODES.into_iter().filter(|_| args.iter().any(|a| a == "--symbolic")) {
                     let t0 = Instant::now();
-                    let s = symcert::verify(&table, &cert, protected, abs);
-                    println!("  symbolic, {} ({:.2?}): {} membership leaves over {} legal positions ({:.3} per position), {} safe leaves over {} safe positions",
-                        if abs { "abstract" } else { "pinning" }, t0.elapsed(), s.member_leaves, s.legal_positions, s.member_leaves as f64 / s.legal_positions as f64,
+                    let s = symcert::verify(&table, &cert, protected, mode);
+                    println!("  symbolic, {:?} ({:.2?}): {} membership leaves over {} legal positions ({:.3} per position), {} safe leaves over {} safe positions",
+                        mode, t0.elapsed(), s.member_leaves, s.legal_positions, s.member_leaves as f64 / s.legal_positions as f64,
                         s.safe_leaves, s.safe_positions);
                     println!("    obligations: own-turn {} leaves over {} positions ({:.3}); opponent-turn {} leaves over {} positions ({:.3}); violating positions {}",
                         s.own_leaves, s.own_positions, s.own_leaves as f64 / s.own_positions.max(1) as f64,
                         s.opp_leaves, s.opp_positions, s.opp_leaves as f64 / s.opp_positions.max(1) as f64, s.violating_positions);
-                    println!("    work: {} oracle queries ({:.1} per legal position), {} forks; cross-check: {} cover errors, {} mismatches",
-                        s.queries, s.queries as f64 / s.legal_positions as f64, s.forks, s.cover_errors, s.mismatches);
+                    println!("    work: {} oracle queries ({:.1} per legal position), {} forks; cross-check: {} cover errors, {} membership mismatches, {} obligation mismatches",
+                        s.queries, s.queries as f64 / s.legal_positions as f64, s.forks, s.cover_errors, s.mismatches, s.obligation_mismatches);
                     println!("    membership leaf sizes: {} singletons, {} of 2-3, {} of 4-15, {} of 16+; walks needing move generation cover {} positions ({:.1}%)",
                         s.leaf_size_hist[0], s.leaf_size_hist[1], s.leaf_size_hist[2], s.leaf_size_hist[3],
                         s.movegen_positions, 100.0 * s.movegen_positions as f64 / s.legal_positions as f64);
@@ -174,16 +178,20 @@ fn main() {
                 let r = cert::verify(&table, &sy.cert, protected);
                 println!("protected {:?}: root in invariant: {}; safe states {} of {} nonlosing; violations {}; unsound vs table {}",
                     protected, r.root_in_invariant, r.safe_states, r.nonlosing_in_table, r.violations(), r.unsound_vs_table);
-                for abs in [false, true].into_iter().filter(|_| args.iter().any(|a| a == "--symbolic")) {
+                for mode in MODES.into_iter().filter(|_| args.iter().any(|a| a == "--symbolic")) {
                     let t0 = Instant::now();
-                    let s = symcert::verify(&table, &sy.cert, protected, abs);
-                    println!("  symbolic, {} ({:.2?}): {} membership leaves (+{} without legal positions) over {} legal positions ({:.3}); own-turn {} leaves / {} positions ({:.3}); opponent-turn {} / {} ({:.3}); violating {}; cross-check {} cover errors, {} mismatches",
-                        if abs { "abstract" } else { "pinning" }, t0.elapsed(), s.member_leaves, s.empty_leaves, s.legal_positions, s.member_leaves as f64 / s.legal_positions as f64,
+                    let s = symcert::verify(&table, &sy.cert, protected, mode);
+                    println!("  symbolic, {:?} ({:.2?}): {} membership leaves (+{} without legal positions) over {} legal positions ({:.3}); own-turn {} leaves / {} positions ({:.3}); opponent-turn {} / {} ({:.3}); violating {}; cross-check {} cover errors, {} membership mismatches, {} obligation mismatches",
+                        mode, t0.elapsed(), s.member_leaves, s.empty_leaves, s.legal_positions, s.member_leaves as f64 / s.legal_positions as f64,
                         s.own_leaves, s.own_positions, s.own_leaves as f64 / s.own_positions.max(1) as f64,
                         s.opp_leaves, s.opp_positions, s.opp_leaves as f64 / s.opp_positions.max(1) as f64,
-                        s.violating_positions, s.cover_errors, s.mismatches);
+                        s.violating_positions, s.cover_errors, s.mismatches, s.obligation_mismatches);
                     println!("    leaf sizes: {:?}; move generation in {:.1}% of membership walks", s.leaf_size_hist,
                         100.0 * s.movegen_positions as f64 / s.legal_positions as f64);
+                    if mode == Mode::Cover {
+                        println!("    cover: {} cases (move decisions + membership classifications), {} witness regions, against {} concrete edges",
+                            s.cases, s.witnesses, r.own_candidate_edges + r.opponent_edges);
+                    }
                 }
             }
         }
@@ -347,7 +355,7 @@ mod tests {
     fn codex_certificate_weak4_symbolic_check_is_exact() {
         let setup = Setup::parse(4, "KRvKR").unwrap();
         let table = Table::solve(setup);
-        let s = symcert::verify(&table, &certs::weak4(), Color::White, false);
+        let s = symcert::verify(&table, &certs::weak4(), Color::White, Mode::Pinning);
         assert_eq!(s.legal_positions, 42552);
         assert_eq!(s.safe_positions, 25380);
         assert_eq!((s.cover_errors, s.mismatches, s.violating_positions), (0, 0, 0));
@@ -370,7 +378,7 @@ mod tests {
             let r = cert::verify(&table, &geo.cert, protected);
             assert!(r.root_in_invariant);
             assert_eq!((r.violations(), r.unsound_vs_table), (0, 0));
-            let s = symcert::verify(&table, &geo.cert, protected, true);
+            let s = symcert::verify(&table, &geo.cert, protected, Mode::Abstract);
             assert_eq!((s.cover_errors, s.mismatches, s.violating_positions), (0, 0, 0));
             assert!(s.member_leaves < s.legal_positions / 5, "abstract membership should be coarse: {}", s.member_leaves);
             assert_eq!(s.own_positions + s.opp_positions, 31700);
