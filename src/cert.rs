@@ -10,7 +10,7 @@
 //! * no position in the region has the protected side checkmated.
 //!
 //! Features are computed through the `Oracle` trait so the same code runs
-//! on a concrete `Position` and, later, on a superposed region.
+//! on a concrete `Position` and on a superposed region (see `symcert`).
 
 use crate::board::*;
 use crate::certs::Cert;
@@ -125,96 +125,111 @@ fn clear<O: Oracle>(setup: &Setup, o: &O, p: Sq, q: Sq) -> Res<bool> {
     Ok(true)
 }
 
-/// The 36 features of the position seen by `o` (with `stm` to move), from
-/// the perspective of `roles.protected`.
-pub fn features<O: Oracle>(setup: &Setup, o: &O, stm: Color, roles: &Roles) -> Res<[i32; NFEAT]> {
-    let n = setup.n as i32;
-    let mut f = [0i32; NFEAT];
-    let mut k = 0;
-    let mut push = |v: i32| {
-        f[k] = v;
-        k += 1;
-    };
-    push((stm != roles.protected) as i32);
-    let own_r = o.locate(roles.own_r)?;
-    let opp_r = o.locate(roles.opp_r)?;
-    let own_k = o.locate(roles.own_k)?.expect("own king present");
-    let opp_k = o.locate(roles.opp_k)?.expect("opponent king present");
-    push(own_r.is_none() as i32);
-    push(opp_r.is_none() as i32);
-    for p in [Some(own_k), Some(opp_k), own_r, opp_r] {
-        match p {
-            Some(p) => {
-                let (x, y) = setup.file_rank(p);
-                push(x.min(y).min(n - 1 - x).min(n - 1 - y));
-                push(((x == 0 || x == n - 1) && (y == 0 || y == n - 1)) as i32);
-            }
-            None => {
-                push(-1);
-                push(0);
-            }
-        }
-    }
-    for (p, q) in [
-        (Some(own_k), Some(opp_k)),
-        (Some(own_k), own_r),
-        (Some(opp_k), opp_r),
-        (Some(own_k), opp_r),
-        (Some(opp_k), own_r),
-        (own_r, opp_r),
-    ] {
-        match (p, q) {
-            (Some(p), Some(q)) => {
-                push(distance(setup, p, q));
-                push(aligned(setup, p, q) as i32);
-                push(clear(setup, o, p, q)? as i32);
-            }
-            _ => {
-                push(99);
-                push(0);
-                push(0);
-            }
-        }
-    }
-    push(in_check(setup, o, stm)? as i32);
-    let moves = legal_moves(setup, o, stm)?;
-    push(moves.len() as i32);
-    let (mut rm_opp, mut rm_own, mut check, mut mate, mut stalemate) = (false, false, false, false, false);
-    for mv in moves {
-        let t = Played { base: o, mv };
-        let opp_gone = t.locate(roles.opp_r)?.is_none();
-        let own_present = t.locate(roles.own_r)?.is_some();
-        rm_opp |= opp_gone && own_present;
-        rm_own |= !own_present;
-        let chk = in_check(setup, &t, stm.flip())?;
-        check |= chk;
-        // The original computes the reply count of every successor.
-        let replies = legal_moves(setup, &t, stm.flip())?.len();
-        mate |= chk && replies == 0;
-        stalemate |= !chk && replies == 0;
-    }
-    push(rm_opp as i32);
-    push(rm_own as i32);
-    push(check as i32);
-    push(mate as i32);
-    push(stalemate as i32);
-    debug_assert_eq!(k, NFEAT);
-    Ok(f)
+/// Slots in the certificate's piece order [own K, opp K, own R, opp R]
+/// used by the edge/corner features.
+fn piece_slots(roles: &Roles) -> [SlotId; 4] {
+    [roles.own_k, roles.opp_k, roles.own_r, roles.opp_r]
 }
 
-/// Walk the DAG: node ids 0/1 are the false/true terminals.
-pub fn evaluate(cert: &Cert, f: &[i32; NFEAT]) -> bool {
+/// Slot pairs of the relational features, in the certificate's order.
+fn pair_slots(roles: &Roles) -> [(SlotId, SlotId); 6] {
+    [
+        (roles.own_k, roles.opp_k),
+        (roles.own_k, roles.own_r),
+        (roles.opp_k, roles.opp_r),
+        (roles.own_k, roles.opp_r),
+        (roles.opp_k, roles.own_r),
+        (roles.own_r, roles.opp_r),
+    ]
+}
+
+/// Feature `i` of the position seen by `o` (with `stm` to move), from the
+/// perspective of `roles.protected`. Consults only what feature `i` needs,
+/// so a region pays only for the features the DAG actually asks.
+pub fn feature<O: Oracle>(setup: &Setup, o: &O, stm: Color, roles: &Roles, i: usize) -> Res<i32> {
+    let n = setup.n as i32;
+    Ok(match i {
+        0 => (stm != roles.protected) as i32,
+        1 => o.locate(roles.own_r)?.is_none() as i32,
+        2 => o.locate(roles.opp_r)?.is_none() as i32,
+        3..=10 => {
+            let s = piece_slots(roles)[(i - 3) / 2];
+            match o.locate(s)? {
+                Some(p) => {
+                    let (x, y) = setup.file_rank(p);
+                    if (i - 3) % 2 == 0 {
+                        x.min(y).min(n - 1 - x).min(n - 1 - y)
+                    } else {
+                        ((x == 0 || x == n - 1) && (y == 0 || y == n - 1)) as i32
+                    }
+                }
+                None => {
+                    if (i - 3) % 2 == 0 { -1 } else { 0 }
+                }
+            }
+        }
+        11..=28 => {
+            let (a, b) = pair_slots(roles)[(i - 11) / 3];
+            match (o.locate(a)?, o.locate(b)?) {
+                (Some(p), Some(q)) => match (i - 11) % 3 {
+                    0 => distance(setup, p, q),
+                    1 => aligned(setup, p, q) as i32,
+                    _ => clear(setup, o, p, q)? as i32,
+                },
+                _ => {
+                    if (i - 11) % 3 == 0 { 99 } else { 0 }
+                }
+            }
+        }
+        29 => in_check(setup, o, stm)? as i32,
+        30 => legal_moves(setup, o, stm)?.len() as i32,
+        31..=35 => {
+            let mut found = false;
+            for mv in legal_moves(setup, o, stm)? {
+                let t = Played { base: o, mv };
+                found = match i {
+                    31 => t.locate(roles.opp_r)?.is_none() && t.locate(roles.own_r)?.is_some(),
+                    32 => t.locate(roles.own_r)?.is_none(),
+                    33 => in_check(setup, &t, stm.flip())?,
+                    34 => in_check(setup, &t, stm.flip())? && legal_moves(setup, &t, stm.flip())?.is_empty(),
+                    _ => !in_check(setup, &t, stm.flip())? && legal_moves(setup, &t, stm.flip())?.is_empty(),
+                };
+                if found {
+                    break;
+                }
+            }
+            found as i32
+        }
+        _ => panic!("no feature {i}"),
+    })
+}
+
+/// Walk the DAG on the position seen by `o`, computing features on demand.
+/// Node ids 0/1 are the false/true terminals.
+pub fn evaluate<O: Oracle>(setup: &Setup, cert: &Cert, o: &O, stm: Color, roles: &Roles) -> Res<bool> {
+    evaluate_traced(setup, cert, o, stm, roles, &mut |_| {})
+}
+
+/// `evaluate`, reporting each feature index the walk consults.
+pub fn evaluate_traced<O: Oracle>(
+    setup: &Setup,
+    cert: &Cert,
+    o: &O,
+    stm: Color,
+    roles: &Roles,
+    on_feature: &mut impl FnMut(usize),
+) -> Res<bool> {
     let mut node = cert.root;
     while node >= 2 {
         let [feat, thr, l, r] = cert.nodes[node as usize - 2];
-        node = if f[feat as usize] <= thr { l } else { r } as u32;
+        on_feature(feat as usize);
+        node = if feature(setup, o, stm, roles, feat as usize)? <= thr { l } else { r } as u32;
     }
-    node == 1
+    Ok(node == 1)
 }
 
 pub fn safe(setup: &Setup, cert: &Cert, p: &Position, roles: &Roles) -> bool {
-    let f = features(setup, p, p.stm, roles).expect("concrete positions never block");
-    evaluate(cert, &f)
+    evaluate(setup, cert, p, p.stm, roles).expect("concrete positions never block")
 }
 
 /// The experiment's start: White Ka1 Rb1, Black K in the far corner with

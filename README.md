@@ -116,3 +116,77 @@ the retrograde frontier, in endgames where every piece matters. Whatever
 tablebases fit in a fraction of a bit per position), which is a different
 quotient — relational, translation-shaped ("rook on the king's rank"),
 not the per-square product this engine's patterns can express.
+
+## A different proof object: the codex_idea nonloss certificate
+
+`codex_idea/` holds a report, a browser demo and measurements from another
+model's experiment on the same question. It gives up on proving wins and
+proves a draw instead: a **nonloss certificate** for one side is a set of
+positions `I` such that the start is in `I`, the protected side always has
+a move that stays in `I` (or is stalemated), every opponent move stays in
+`I`, and no position in `I` has the protected side mated. That is an
+inductive safety invariant. Checking it needs only one-ply obligations and
+no distance to mate. `I` is described by a decision DAG over 36 relational
+features (edge and corner tests, distances, alignment, clear rays, and
+one-ply tactics such as move count and "can mate"), discovered by
+predicate abstraction to a fixpoint, then shrunk by *restricting the
+protected side's strategy* ("never put your own rook in a corner") so that
+a simpler invariant suffices. The game is KRvKR from a fixed start.
+
+This matters for the question above because a win proof is a least
+fixpoint — every position on it carries a progress measure, and the
+position set is the only thing fine enough to express it, which is what
+the flat 1.0 measures — while a draw proof is a greatest fixpoint with no
+progress measure: any inductive set closed under the obligations will do,
+and that freedom is what makes it compressible. Chess from the start is
+conjecturally a draw, so "solve chess" plausibly means two nonloss
+invariants and no tablebase at all.
+
+### Port and independent check
+
+`src/cert.rs` ports the 36 features and the DAG evaluator onto the
+`Oracle` trait; `chess_search cert N [--cert4] [--symbolic]` checks the
+embedded 4×4 and 5×5 certificates against our retrograde table with a
+third, independent rules implementation. Every count in
+`codex_idea/mini_rook_chess_results.json` is reproduced exactly: legal
+states, safe states, own- and opponent-turn obligations and edges, zero
+violations, both deterministic strategy graphs, and the 4→5 transfer
+failure (852 own-turn positions with no preserving move plus 816
+opponent-turn positions with an escape = their 1,668). In addition, no
+position in either invariant is lost for the protected side according to
+the table. The transferred 4×4 certificate admits 1,324 positions on 5×5
+that the table says are lost, which is why it is not inductive there.
+
+| board | legal | safe | nonlosing (table) | decisions | own obligations | opponent obligations |
+|---|---:|---:|---:|---:|---:|---:|
+| 4×4 | 42,552 | 25,380 | 31,716 | 60 | 15,464 | 9,916 |
+| 5×5 | 352,432 | 231,632 | 271,628 | 261 | 141,640 | 89,992 |
+
+### Can the certificate be checked without enumerating the game?
+
+The report's stated next step is checking obligations "symbolically over
+families rather than by enumerating every concrete member". That is what
+the recording oracle does, so `src/symcert.rs` evaluates the DAG and both
+obligations over superposed regions, forking only on the queries the
+features actually make. The result is cross-checked against the concrete
+evaluation on every legal position (exact cover, same membership).
+
+| board | legal positions | membership leaves | leaves/position | own-turn leaves/position | opponent-turn leaves/position |
+|---|---:|---:|---:|---:|---:|
+| 4×4 | 42,552 | 37,560 | 0.883 | 1.000 | 1.000 |
+| 5×5 | 352,432 | 352,432 | 1.000 | 1.000 | 1.000 |
+
+The certificate is small to *state* but not to *evaluate*: on 4×4, 79% of
+positions' membership walks consult `can_remove_own_rook`, 54% consult
+`legal_move_count` and `can_mate`, all of which generate every legal move
+(and for `can_mate` every reply), which locates every piece. The tree
+learner chose them because they are free on a concrete position; the
+one-fact feature `own_rook_missing` that `can_remove_own_rook` mostly
+stands in for is consulted on 1% of positions. On 5×5 the DAG's root node
+*is* `can_remove_own_rook`, so every membership walk generates every legal
+move and the partition is exactly the position set. Once a leaf is safe, the
+obligation check generates moves anyway, so the obligation partition is
+exactly the position set. Symbolic checking as it stands saves nothing; a
+version that could would have to synthesize the certificate under a
+*symbolic* cost model, preferring features that a region can answer
+without locating everything — a concrete, unimplemented next experiment.

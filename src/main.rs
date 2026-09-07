@@ -3,6 +3,7 @@ mod cert;
 mod certs;
 mod narrow;
 mod retro;
+mod symcert;
 
 use board::*;
 use narrow::*;
@@ -11,7 +12,7 @@ use std::time::Instant;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  chess_search retro [N] [MATERIAL]   solve by retrograde analysis (default 4 KRvK)\n  chess_search narrow [N] [MATERIAL] [--no-memo]   superposed (narrowing) solve, verified against the table\n  chess_search cert [N] [--cert4]   check the codex_idea nonloss certificate for KRvKR on NxN (--cert4: apply the 4x4 certificate)"
+        "usage:\n  chess_search retro [N] [MATERIAL]   solve by retrograde analysis (default 4 KRvK)\n  chess_search narrow [N] [MATERIAL] [--no-memo]   superposed (narrowing) solve, verified against the table\n  chess_search cert [N] [--cert4] [--symbolic]   check the codex_idea nonloss certificate for KRvKR on NxN (--cert4: apply the 4x4 certificate; --symbolic: also check over regions)"
     );
     std::process::exit(2)
 }
@@ -120,6 +121,26 @@ fn main() {
                     r.violations(), r.mated_inside, r.no_preserving_move, r.opponent_escapes, r.opponent_escape_states, r.unsound_vs_table);
                 println!("  strategy graph: {} states, {} edges, {} own checkmates, {} stuck",
                     r.strategy_states, r.strategy_edges, r.strategy_own_checkmates, r.strategy_stuck);
+                if args.iter().any(|a| a == "--symbolic") {
+                    let t0 = Instant::now();
+                    let s = symcert::verify(&table, cert, protected);
+                    println!("  symbolic ({:.2?}): {} membership leaves over {} legal positions ({:.3} per position), {} safe leaves over {} safe positions",
+                        t0.elapsed(), s.member_leaves, s.legal_positions, s.member_leaves as f64 / s.legal_positions as f64,
+                        s.safe_leaves, s.safe_positions);
+                    println!("    obligations: own-turn {} leaves over {} positions ({:.3}); opponent-turn {} leaves over {} positions ({:.3}); violating positions {}",
+                        s.own_leaves, s.own_positions, s.own_leaves as f64 / s.own_positions.max(1) as f64,
+                        s.opp_leaves, s.opp_positions, s.opp_leaves as f64 / s.opp_positions.max(1) as f64, s.violating_positions);
+                    println!("    work: {} oracle queries ({:.1} per legal position), {} forks; cross-check: {} cover errors, {} mismatches",
+                        s.queries, s.queries as f64 / s.legal_positions as f64, s.forks, s.cover_errors, s.mismatches);
+                    println!("    membership leaf sizes: {} singletons, {} of 2-3, {} of 4-15, {} of 16+; walks needing move generation cover {} positions ({:.1}%)",
+                        s.leaf_size_hist[0], s.leaf_size_hist[1], s.leaf_size_hist[2], s.leaf_size_hist[3],
+                        s.movegen_positions, 100.0 * s.movegen_positions as f64 / s.legal_positions as f64);
+                    let mut used: Vec<(usize, usize)> = s.feature_positions.iter().copied().enumerate().filter(|&(_, k)| k > 0).collect();
+                    used.sort_by_key(|&(i, k)| (std::cmp::Reverse(k), i));
+                    println!("    features consulted (positions): {}", used.iter()
+                        .map(|&(i, k)| format!("{}={:.0}%", cert::FEATURE_NAMES[i], 100.0 * k as f64 / s.legal_positions as f64))
+                        .collect::<Vec<_>>().join(" "));
+                }
             }
         }
         _ => usage(),
@@ -274,6 +295,19 @@ mod tests {
         assert_eq!(b.violations(), 0);
         assert_eq!(b.unsound_vs_table, 0);
         assert_eq!((b.strategy_states, b.strategy_edges, b.strategy_own_checkmates), (10704, 25451, 0));
+    }
+
+    /// The symbolic (region) check of the 4x4 certificate must partition the
+    /// legal positions exactly and agree with the concrete evaluation.
+    #[test]
+    fn codex_certificate_weak4_symbolic_check_is_exact() {
+        let setup = Setup::parse(4, "KRvKR").unwrap();
+        let table = Table::solve(setup);
+        let s = symcert::verify(&table, &certs::WEAK4, Color::White);
+        assert_eq!(s.legal_positions, 42552);
+        assert_eq!(s.safe_positions, 25380);
+        assert_eq!((s.cover_errors, s.mismatches, s.violating_positions), (0, 0, 0));
+        assert_eq!(s.own_positions + s.opp_positions, 25380);
     }
 
 }
