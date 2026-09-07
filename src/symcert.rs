@@ -707,7 +707,7 @@ fn pin_all(p: &Position) -> Region {
 /// The concrete obligation at `p` for the protected side: at its own turn,
 /// some legal move enters the region or it is stalemated; at the opponent's
 /// turn, every legal move stays in the region.
-fn concrete_obligation(setup: &Setup, cert: &Cert, p: &Position, roles: &Roles) -> bool {
+pub fn concrete_obligation(setup: &Setup, cert: &Cert, p: &Position, roles: &Roles) -> bool {
     let moves = legal_moves(setup, p, p.stm).unwrap();
     if p.stm == roles.protected {
         if moves.is_empty() {

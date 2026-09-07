@@ -23,6 +23,15 @@ use std::collections::HashMap;
 pub const GEO: std::ops::Range<usize> = 0..29;
 /// Everything, including the one-ply tactical features.
 pub const FULL: std::ops::Range<usize> = 0..NFEAT;
+/// Anchor-relative: only the protected king's edge/corner features are
+/// absolute; everything else is a relation between two pieces. This is the
+/// vocabulary an anchor-relative region can decide by splitting offset
+/// domains, with the anchor's own domain split only by its edge distance.
+pub fn rel_vocab() -> Vec<usize> {
+    let mut v = vec![0, 1, 2, 3, 4];
+    v.extend(11..29);
+    v
+}
 
 pub struct Synthesis {
     pub vocab: Vec<usize>,

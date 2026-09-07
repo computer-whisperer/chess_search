@@ -3,6 +3,7 @@ mod board;
 mod cert;
 mod certs;
 mod narrow;
+mod rel;
 mod retro;
 mod symcert;
 mod synth;
@@ -18,7 +19,7 @@ use std::time::Instant;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  chess_search retro [N] [MATERIAL]   solve by retrograde analysis (default 4 KRvK)\n  chess_search narrow [N] [MATERIAL] [--no-memo]   superposed (narrowing) solve, verified against the table\n  chess_search cert [N] [--cert4] [--symbolic]   check the codex_idea nonloss certificate for KRvKR on NxN (--cert4: apply the 4x4 certificate; --symbolic: also check over regions)\n  chess_search synth [N] [--vocab full|geo] [--symbolic]   synthesize a nonloss certificate for KRvKR on NxN under a feature vocabulary, then check it"
+        "usage:\n  chess_search retro [N] [MATERIAL]   solve by retrograde analysis (default 4 KRvK)\n  chess_search narrow [N] [MATERIAL] [--no-memo]   superposed (narrowing) solve, verified against the table\n  chess_search cert [N] [--cert4] [--symbolic]   check the codex_idea nonloss certificate for KRvKR on NxN (--cert4: apply the 4x4 certificate; --symbolic: also check over regions)\n  chess_search synth [N] [--vocab full|geo|rel] [--symbolic]   synthesize a nonloss certificate for KRvKR on NxN under a feature vocabulary, then check it"
     );
     std::process::exit(2)
 }
@@ -153,6 +154,7 @@ fn main() {
             let vocab: Vec<usize> = match args.iter().position(|a| a == "--vocab").and_then(|i| args.get(i + 1)).map(String::as_str) {
                 None | Some("geo") => synth::GEO.collect(),
                 Some("full") => synth::FULL.collect(),
+                Some("rel") => synth::rel_vocab(),
                 Some(v) => {
                     eprintln!("unknown vocabulary {v}");
                     std::process::exit(2);
@@ -168,16 +170,35 @@ fn main() {
                 sy.cells, sy.rounds, sy.removed_by_round, sy.safe_cells, sy.safe_states, sy.roots_ok);
             println!("  tree: {} nodes before sharing, {} decision nodes after", sy.tree_nodes, sy.cert.nodes.len());
             let _ = std::fs::create_dir_all("out");
-            let path = format!("out/synth_{}x{}_{}.json", n, n, if vocab.len() == NFEAT { "full" } else { "geo" });
+            let vname = match vocab.len() { NFEAT => "full", 29 => "geo", _ => "rel" };
+            let path = format!("out/synth_{}x{}_{}.json", n, n, vname);
             std::fs::write(&path, synth::to_json(&sy.cert, &vocab)).unwrap();
             println!("  certificate written to {path}");
             if !sy.roots_ok.iter().all(|&b| b) {
                 println!("  the start position is not covered: this vocabulary admits no certificate for the start");
             }
+            let is_rel = vname == "rel";
             for protected in [Color::White, Color::Black] {
                 let r = cert::verify(&table, &sy.cert, protected);
                 println!("protected {:?}: root in invariant: {}; safe states {} of {} nonlosing; violations {}; unsound vs table {}",
                     protected, r.root_in_invariant, r.safe_states, r.nonlosing_in_table, r.violations(), r.unsound_vs_table);
+                for cover in [false, true].into_iter().filter(|_| is_rel && args.iter().any(|a| a == "--symbolic")) {
+                    let t0 = Instant::now();
+                    let s = rel::verify(&table, &sy.cert, protected, cover);
+                    println!("  relative, {} ({:.2?}): {} membership leaves over {} legal positions ({:.4}); own-turn {} leaves / {} positions ({:.3}); opponent-turn {} / {} ({:.3}); violating {}; cross-check {} cover errors, {} membership mismatches, {} obligation mismatches",
+                        if cover { "Cover" } else { "AbstractMoves" }, t0.elapsed(), s.member_leaves, s.legal_positions, s.member_leaves as f64 / s.legal_positions as f64,
+                        s.own_leaves, s.own_positions, s.own_leaves as f64 / s.own_positions.max(1) as f64,
+                        s.opp_leaves, s.opp_positions, s.opp_leaves as f64 / s.opp_positions.max(1) as f64,
+                        s.violating_positions, s.cover_errors, s.mismatches, s.obligation_mismatches);
+                    println!("    leaf sizes: {:?}", s.leaf_size_hist);
+                    if cover {
+                        println!("    cover: {} cases, {} witness regions, against {} concrete edges",
+                            s.cases, s.witnesses, r.own_candidate_edges + r.opponent_edges);
+                    }
+                }
+                if is_rel {
+                    continue;
+                }
                 for mode in MODES.into_iter().filter(|_| args.iter().any(|a| a == "--symbolic")) {
                     let t0 = Instant::now();
                     let s = symcert::verify(&table, &sy.cert, protected, mode);
@@ -382,6 +403,24 @@ mod tests {
             assert_eq!((s.cover_errors, s.mismatches, s.violating_positions), (0, 0, 0));
             assert!(s.member_leaves < s.legal_positions / 5, "abstract membership should be coarse: {}", s.member_leaves);
             assert_eq!(s.own_positions + s.opp_positions, 31700);
+        }
+    }
+
+    /// The anchor-relative vocabulary admits a certificate on 4x4, and the
+    /// relative-region engine checks it exactly in both modes.
+    #[test]
+    fn relative_engine_is_exact_on_4x4() {
+        let setup = Setup::parse(4, "KRvKR").unwrap();
+        let table = Table::solve(setup);
+        let sy = synth::synthesize(&table, &synth::rel_vocab());
+        assert_eq!((sy.safe_states, sy.roots_ok), (31676, [true, true]));
+        for protected in [Color::White, Color::Black] {
+            for cover in [false, true] {
+                let s = rel::verify(&table, &sy.cert, protected, cover);
+                assert_eq!((s.cover_errors, s.mismatches, s.obligation_mismatches, s.violating_positions), (0, 0, 0, 0));
+                assert_eq!(s.legal_positions, 42552);
+                assert!(s.member_leaves < 4000, "relative membership leaves: {}", s.member_leaves);
+            }
         }
     }
 

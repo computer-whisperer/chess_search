@@ -15,7 +15,7 @@
 use crate::board::*;
 use crate::certs::Cert;
 use crate::retro::{Table, Val};
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 pub const NFEAT: usize = 36;
 
@@ -343,10 +343,18 @@ pub fn verify(table: &Table, cert: &Cert, protected: Color) -> Report {
         }
     }
     // Strategy graph of the fixed policy: first preserving successor in
-    // normalized lexicographic order; all opponent replies.
-    let mut seen: HashSet<Position> = HashSet::new();
+    // normalized lexicographic order; all opponent replies. Visited set as a
+    // bitset over table indices so large boards fit in memory.
+    let mut seen = vec![0u64; table.vals.len().div_ceil(64)];
+    let mut visit = |seen: &mut Vec<u64>, p: &Position| -> bool {
+        let i = Table::index(setup, p);
+        let (w, b) = (i / 64, 1u64 << (i % 64));
+        let new = seen[w] & b == 0;
+        seen[w] |= b;
+        new
+    };
     let mut queue = VecDeque::new();
-    seen.insert(root.clone());
+    visit(&mut seen, &root);
     queue.push_back(root);
     while let Some(p) = queue.pop_front() {
         rep.strategy_states += 1;
@@ -370,7 +378,7 @@ pub fn verify(table: &Table, cert: &Cert, protected: Color) -> Report {
         }
         for c in next {
             rep.strategy_edges += 1;
-            if seen.insert(c.clone()) {
+            if visit(&mut seen, &c) {
                 queue.push_back(c);
             }
         }
