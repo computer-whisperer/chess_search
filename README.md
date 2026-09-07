@@ -262,6 +262,49 @@ membership leaves are large, which needs pieces the invariant does not
 mention — the same condition the win-proof partition needed, reached from
 the other direction.
 
+### Anchor-relative regions: the translation quotient
+
+The fragmentation above comes from the region representation, not from
+the invariant. The invariant's description is already mostly relative —
+distances, alignments and clear rays between pairs — but products of
+*absolute* square sets cannot express "rook on the king's rank" without
+pinning one of the two pieces, so every relational test on two unpinned
+pieces fell back to a pin.
+
+`src/rel.rs` changes the representation: a region is the protected king's
+absolute square set (the *anchor*) times one *offset* domain per other
+piece, with the board boundary as the only coupling. Distances, alignments
+and clear rays are then predicates on offsets alone; the anchor's edge
+distance is a split on the anchor set alone; an anchor move translates
+every offset domain by a constant and a rook move changes one offset, so
+successors and pullbacks stay products. One witness region with a
+relative move covers every translation of a pattern at once. The
+certificate is re-synthesized under the matching vocabulary (`--vocab
+rel`: the anchor's edge and corner features plus all pair relations; no
+edge features of other pieces), which still admits inductive invariants
+close to the whole nonlosing region. Every run below is exact under the
+same per-position cross-checks.
+
+| board | legal positions | rel safe / nonlosing | decision nodes | membership leaves/position: absolute | relative | Cover cases / concrete edges: absolute | relative |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 4×4 | 42,552 | 31,676 / 31,716 | 145 | 0.140 | 0.079 | 3.4 | 1.93 |
+| 5×5 | 352,432 | 258,364 / 271,628 | 687 | 0.125 | 0.062 | 2.9 | 1.42 |
+| 6×6 | 1,828,480 | 1,432,360 / 1,457,528 | 912 | 0.242 | 0.024 | 4.5 | **0.60** |
+| 7×7 | 7,076,040 | 5,745,304 / 5,804,220 | 1,245 | 0.442 | 0.0125 | 5.3 | **0.31** |
+| 8×8 | LEGAL8 | REL8 |
+
+The two representations move in opposite directions as the board grows.
+Absolute regions get *worse*: the certificate needs more nodes, the leaves
+stay small, and the per-move case analysis does not shrink. Relative
+regions get better at every step, and at 6×6 the symbolic check crosses
+over: 9.0 million cases against 15.0 million concrete edges, with 98% of
+the opponent-turn leaves settled whole (no move escapes anywhere in the
+region) and one witness region per 1.7 own-turn positions. Membership is
+decided on 41 times fewer regions than there are positions. At 7×7 the
+ratio is 0.31 (22.6 million cases against 73.9 million edges), membership
+needs 80 times fewer regions than positions, and one witness region
+covers 3.6 own-turn positions.
+
 Where that leaves the tweet argument: the drawn game's proof object is an
 inductive invariant and it *is* compressible (152 relational decisions
 for 42,552 positions here; 442 for 352,432), but discovering and checking
