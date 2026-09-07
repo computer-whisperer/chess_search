@@ -4,15 +4,17 @@ mod certs;
 mod narrow;
 mod retro;
 mod symcert;
+mod synth;
 
 use board::*;
+use cert::NFEAT;
 use narrow::*;
 use retro::*;
 use std::time::Instant;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  chess_search retro [N] [MATERIAL]   solve by retrograde analysis (default 4 KRvK)\n  chess_search narrow [N] [MATERIAL] [--no-memo]   superposed (narrowing) solve, verified against the table\n  chess_search cert [N] [--cert4] [--symbolic]   check the codex_idea nonloss certificate for KRvKR on NxN (--cert4: apply the 4x4 certificate; --symbolic: also check over regions)"
+        "usage:\n  chess_search retro [N] [MATERIAL]   solve by retrograde analysis (default 4 KRvK)\n  chess_search narrow [N] [MATERIAL] [--no-memo]   superposed (narrowing) solve, verified against the table\n  chess_search cert [N] [--cert4] [--symbolic]   check the codex_idea nonloss certificate for KRvKR on NxN (--cert4: apply the 4x4 certificate; --symbolic: also check over regions)\n  chess_search synth [N] [--vocab full|geo] [--symbolic]   synthesize a nonloss certificate for KRvKR on NxN under a feature vocabulary, then check it"
     );
     std::process::exit(2)
 }
@@ -21,7 +23,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("retro");
     let n: u8 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(4);
-    let material = if cmd == "cert" { "KRvKR" } else { args.get(2).map(String::as_str).unwrap_or("KRvK") };
+    let material = if cmd == "cert" || cmd == "synth" { "KRvKR" } else { args.get(2).map(String::as_str).unwrap_or("KRvK") };
     let setup = match Setup::parse(n, material) {
         Ok(s) => s,
         Err(e) => {
@@ -97,10 +99,10 @@ fn main() {
             }
         }
         "cert" => {
-            let cert: &certs::Cert = if args.iter().any(|a| a == "--cert4") || n == 4 {
-                &certs::WEAK4
+            let cert: certs::Cert = if args.iter().any(|a| a == "--cert4") || n == 4 {
+                certs::weak4()
             } else if n == 5 {
-                &certs::WEAK5
+                certs::weak5()
             } else {
                 eprintln!("no certificate for {n}x{n}; use --cert4 to transfer the 4x4 one");
                 std::process::exit(2);
@@ -111,7 +113,7 @@ fn main() {
                 setup.name(), n, n, st.legal, cert.board, cert.board, cert.nodes.len(), cert.root);
             for protected in [Color::White, Color::Black] {
                 let t0 = Instant::now();
-                let r = cert::verify(&table, cert, protected);
+                let r = cert::verify(&table, &cert, protected);
                 println!("protected {:?} ({:.2?}): root in invariant: {}; safe states {} of {} nonlosing ({:.1}%)",
                     protected, t0.elapsed(), r.root_in_invariant, r.safe_states, r.nonlosing_in_table,
                     100.0 * r.safe_states as f64 / r.nonlosing_in_table as f64);
@@ -121,11 +123,11 @@ fn main() {
                     r.violations(), r.mated_inside, r.no_preserving_move, r.opponent_escapes, r.opponent_escape_states, r.unsound_vs_table);
                 println!("  strategy graph: {} states, {} edges, {} own checkmates, {} stuck",
                     r.strategy_states, r.strategy_edges, r.strategy_own_checkmates, r.strategy_stuck);
-                if args.iter().any(|a| a == "--symbolic") {
+                for abs in [false, true].into_iter().filter(|_| args.iter().any(|a| a == "--symbolic")) {
                     let t0 = Instant::now();
-                    let s = symcert::verify(&table, cert, protected);
-                    println!("  symbolic ({:.2?}): {} membership leaves over {} legal positions ({:.3} per position), {} safe leaves over {} safe positions",
-                        t0.elapsed(), s.member_leaves, s.legal_positions, s.member_leaves as f64 / s.legal_positions as f64,
+                    let s = symcert::verify(&table, &cert, protected, abs);
+                    println!("  symbolic, {} ({:.2?}): {} membership leaves over {} legal positions ({:.3} per position), {} safe leaves over {} safe positions",
+                        if abs { "abstract" } else { "pinning" }, t0.elapsed(), s.member_leaves, s.legal_positions, s.member_leaves as f64 / s.legal_positions as f64,
                         s.safe_leaves, s.safe_positions);
                     println!("    obligations: own-turn {} leaves over {} positions ({:.3}); opponent-turn {} leaves over {} positions ({:.3}); violating positions {}",
                         s.own_leaves, s.own_positions, s.own_leaves as f64 / s.own_positions.max(1) as f64,
@@ -140,6 +142,48 @@ fn main() {
                     println!("    features consulted (positions): {}", used.iter()
                         .map(|&(i, k)| format!("{}={:.0}%", cert::FEATURE_NAMES[i], 100.0 * k as f64 / s.legal_positions as f64))
                         .collect::<Vec<_>>().join(" "));
+                }
+            }
+        }
+        "synth" => {
+            let vocab: Vec<usize> = match args.iter().position(|a| a == "--vocab").and_then(|i| args.get(i + 1)).map(String::as_str) {
+                None | Some("geo") => synth::GEO.collect(),
+                Some("full") => synth::FULL.collect(),
+                Some(v) => {
+                    eprintln!("unknown vocabulary {v}");
+                    std::process::exit(2);
+                }
+            };
+            let table = Table::solve(setup.clone());
+            let st = table.stats();
+            let t0 = Instant::now();
+            let sy = synth::synthesize(&table, &vocab);
+            println!("{} on {}x{}: {} legal positions; vocabulary of {} features ({:.2?})",
+                setup.name(), n, n, st.legal, vocab.len(), t0.elapsed());
+            println!("  {} cells; fixpoint in {} rounds (removed {:?}); {} safe cells, {} safe states; roots ok {:?}",
+                sy.cells, sy.rounds, sy.removed_by_round, sy.safe_cells, sy.safe_states, sy.roots_ok);
+            println!("  tree: {} nodes before sharing, {} decision nodes after", sy.tree_nodes, sy.cert.nodes.len());
+            let _ = std::fs::create_dir_all("out");
+            let path = format!("out/synth_{}x{}_{}.json", n, n, if vocab.len() == NFEAT { "full" } else { "geo" });
+            std::fs::write(&path, synth::to_json(&sy.cert, &vocab)).unwrap();
+            println!("  certificate written to {path}");
+            if !sy.roots_ok.iter().all(|&b| b) {
+                println!("  the start position is not covered: this vocabulary admits no certificate for the start");
+            }
+            for protected in [Color::White, Color::Black] {
+                let r = cert::verify(&table, &sy.cert, protected);
+                println!("protected {:?}: root in invariant: {}; safe states {} of {} nonlosing; violations {}; unsound vs table {}",
+                    protected, r.root_in_invariant, r.safe_states, r.nonlosing_in_table, r.violations(), r.unsound_vs_table);
+                for abs in [false, true].into_iter().filter(|_| args.iter().any(|a| a == "--symbolic")) {
+                    let t0 = Instant::now();
+                    let s = symcert::verify(&table, &sy.cert, protected, abs);
+                    println!("  symbolic, {} ({:.2?}): {} membership leaves (+{} without legal positions) over {} legal positions ({:.3}); own-turn {} leaves / {} positions ({:.3}); opponent-turn {} / {} ({:.3}); violating {}; cross-check {} cover errors, {} mismatches",
+                        if abs { "abstract" } else { "pinning" }, t0.elapsed(), s.member_leaves, s.empty_leaves, s.legal_positions, s.member_leaves as f64 / s.legal_positions as f64,
+                        s.own_leaves, s.own_positions, s.own_leaves as f64 / s.own_positions.max(1) as f64,
+                        s.opp_leaves, s.opp_positions, s.opp_leaves as f64 / s.opp_positions.max(1) as f64,
+                        s.violating_positions, s.cover_errors, s.mismatches);
+                    println!("    leaf sizes: {:?}; move generation in {:.1}% of membership walks", s.leaf_size_hist,
+                        100.0 * s.movegen_positions as f64 / s.legal_positions as f64);
                 }
             }
         }
@@ -279,7 +323,7 @@ mod tests {
     fn codex_certificate_weak4_matches_reported_counts_and_table() {
         let setup = Setup::parse(4, "KRvKR").unwrap();
         let table = Table::solve(setup);
-        let w = cert::verify(&table, &certs::WEAK4, Color::White);
+        let w = cert::verify(&table, &certs::weak4(), Color::White);
         assert_eq!(w.legal_states, 42552);
         assert!(w.root_in_invariant);
         assert_eq!(w.safe_states, 25380);
@@ -290,7 +334,7 @@ mod tests {
         assert_eq!(w.violations(), 0);
         assert_eq!(w.unsound_vs_table, 0);
         assert_eq!((w.strategy_states, w.strategy_edges, w.strategy_own_checkmates), (10018, 23891, 0));
-        let b = cert::verify(&table, &certs::WEAK4, Color::Black);
+        let b = cert::verify(&table, &certs::weak4(), Color::Black);
         assert!(b.root_in_invariant);
         assert_eq!(b.violations(), 0);
         assert_eq!(b.unsound_vs_table, 0);
@@ -303,11 +347,34 @@ mod tests {
     fn codex_certificate_weak4_symbolic_check_is_exact() {
         let setup = Setup::parse(4, "KRvKR").unwrap();
         let table = Table::solve(setup);
-        let s = symcert::verify(&table, &certs::WEAK4, Color::White);
+        let s = symcert::verify(&table, &certs::weak4(), Color::White, false);
         assert_eq!(s.legal_positions, 42552);
         assert_eq!(s.safe_positions, 25380);
         assert_eq!((s.cover_errors, s.mismatches, s.violating_positions), (0, 0, 0));
         assert_eq!(s.own_positions + s.opp_positions, 25380);
+    }
+
+    /// Synthesis control: the full vocabulary must reproduce codex_idea's
+    /// fixpoint (5,220 cells, 31,716 safe states); the geometric vocabulary
+    /// must still yield an inductive certificate, and its abstract symbolic
+    /// check must be exact.
+    #[test]
+    fn synthesis_reproduces_fixpoint_and_geo_certificate_is_inductive() {
+        let setup = Setup::parse(4, "KRvKR").unwrap();
+        let table = Table::solve(setup);
+        let full = synth::synthesize(&table, &synth::FULL.collect::<Vec<_>>());
+        assert_eq!((full.cells, full.safe_states, full.roots_ok), (5220, 31716, [true, true]));
+        let geo = synth::synthesize(&table, &synth::GEO.collect::<Vec<_>>());
+        assert_eq!((geo.safe_states, geo.roots_ok), (31700, [true, true]));
+        for protected in [Color::White, Color::Black] {
+            let r = cert::verify(&table, &geo.cert, protected);
+            assert!(r.root_in_invariant);
+            assert_eq!((r.violations(), r.unsound_vs_table), (0, 0));
+            let s = symcert::verify(&table, &geo.cert, protected, true);
+            assert_eq!((s.cover_errors, s.mismatches, s.violating_positions), (0, 0, 0));
+            assert!(s.member_leaves < s.legal_positions / 5, "abstract membership should be coarse: {}", s.member_leaves);
+            assert_eq!(s.own_positions + s.opp_positions, 31700);
+        }
     }
 
 }

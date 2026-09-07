@@ -190,3 +190,45 @@ exactly the position set. Symbolic checking as it stands saves nothing; a
 version that could would have to synthesize the certificate under a
 *symbolic* cost model, preferring features that a region can answer
 without locating everything — a concrete, unimplemented next experiment.
+
+### Synthesizing under a symbolic cost model
+
+`src/synth.rs` redoes the discovery in Rust: feature cells, greatest-fixpoint
+closure, an exact decision tree, hash-consing. With the full vocabulary it
+reproduces codex_idea's fixpoint exactly on 4×4 (5,220 cells, the same 18
+removal rounds, 31,716 safe states). The cost model is the vocabulary:
+`--vocab geo` keeps only the 29 features a region can decide by
+*splitting a slot's domain by the tested predicate* (side to move, missing
+rooks, edge and corner tests, pair distances, alignments, clear rays) and
+drops the seven that generate moves. `src/symcert.rs` gained the matching
+abstract evaluator: a threshold test on one piece splits that piece's
+domain into the squares that pass and the squares that fail, a pair test
+splits the unpinned side against the pinned one, a clear-ray test splits a
+potential blocker's domain on the between-squares. Only when both pieces of
+a pair are unpinned and the test is undecided does it fall back to pinning.
+Every partition is still cross-checked position by position against the
+concrete evaluation.
+
+An inductive certificate exists without any move-generation feature, and
+it is nearly the whole nonlosing region:
+
+| board | vocabulary | cells | safe states | nonlosing | decision nodes | membership leaves/position (pinning) | (abstract) | obligation leaves/position |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 4×4 | full (36) | 5,220 | 31,716 | 31,716 | 87 | — | — | — |
+| 4×4 | geo (29) | 5,044 | 31,700 | 31,716 | 152 | 0.775 | **0.140** | 1.000 |
+| 5×5 | geo (29) | 37,136 | 270,016 | 271,628 | 442 | 0.583 | **0.125** | 0.992 / 0.996 |
+
+So the membership question — is this position in the invariant? — is now
+answered on 7 to 8 times fewer regions than positions, exactly and without
+enumeration. The obligations are not: they still run the ordinary move
+generator against the recording oracle, which must locate the mover
+(pinning the side to move) and then scans rays for the legality of every
+candidate move, and on these boards those scans reach the remaining
+pieces. The 0.992 on 5×5 is the first sign of an opponent piece that some
+scan never reaches. Closing this gap needs an *abstract move generator*: a
+move "king to t" applied to a whole region as a domain transformer (the
+preimage is the king's domain intersected with t's neighbours, the
+successor pins the king at t, legality splits the enemy rook's domain on
+the squares aligned with t), so that the obligation, like membership,
+becomes a computation on products of square-sets rather than on positions.
+That is the next experiment; it has not been built.

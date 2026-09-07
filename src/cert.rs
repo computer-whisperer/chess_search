@@ -92,13 +92,13 @@ impl Roles {
 }
 
 /// Chebyshev distance.
-fn distance(setup: &Setup, p: Sq, q: Sq) -> i32 {
+pub fn distance(setup: &Setup, p: Sq, q: Sq) -> i32 {
     let (px, py) = setup.file_rank(p);
     let (qx, qy) = setup.file_rank(q);
     (px - qx).abs().max((py - qy).abs())
 }
 
-fn aligned(setup: &Setup, p: Sq, q: Sq) -> bool {
+pub fn aligned(setup: &Setup, p: Sq, q: Sq) -> bool {
     let (px, py) = setup.file_rank(p);
     let (qx, qy) = setup.file_rank(q);
     px == qx || py == qy
@@ -127,12 +127,12 @@ fn clear<O: Oracle>(setup: &Setup, o: &O, p: Sq, q: Sq) -> Res<bool> {
 
 /// Slots in the certificate's piece order [own K, opp K, own R, opp R]
 /// used by the edge/corner features.
-fn piece_slots(roles: &Roles) -> [SlotId; 4] {
+pub fn piece_slots(roles: &Roles) -> [SlotId; 4] {
     [roles.own_k, roles.opp_k, roles.own_r, roles.opp_r]
 }
 
 /// Slot pairs of the relational features, in the certificate's order.
-fn pair_slots(roles: &Roles) -> [(SlotId, SlotId); 6] {
+pub fn pair_slots(roles: &Roles) -> [(SlotId, SlotId); 6] {
     [
         (roles.own_k, roles.opp_k),
         (roles.own_k, roles.own_r),
