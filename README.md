@@ -291,7 +291,7 @@ same per-position cross-checks.
 | 5×5 | 352,432 | 258,364 / 271,628 | 687 | 0.125 | 0.062 | 2.9 | 1.42 |
 | 6×6 | 1,828,480 | 1,432,360 / 1,457,528 | 912 | 0.242 | 0.024 | 4.5 | **0.60** |
 | 7×7 | 7,076,040 | 5,745,304 / 5,804,220 | 1,245 | 0.442 | 0.0125 | 5.3 | **0.31** |
-| 8×8 | LEGAL8 | REL8 |
+| 8×8 | 22,366,904 | 18,617,388 / 18,778,340 | 2,050 | — | 0.0060 | — | **0.16** |
 
 The two representations move in opposite directions as the board grows.
 Absolute regions get *worse*: the certificate needs more nodes, the leaves
@@ -303,7 +303,22 @@ region) and one witness region per 1.7 own-turn positions. Membership is
 decided on 41 times fewer regions than there are positions. At 7×7 the
 ratio is 0.31 (22.6 million cases against 73.9 million edges), membership
 needs 80 times fewer regions than positions, and one witness region
-covers 3.6 own-turn positions.
+covers 3.6 own-turn positions. At 8×8 (22.4 million legal positions, the
+absolute-region run was not attempted) the ratio is 0.16: 45.7 million
+cases against 281.7 million concrete edges, membership on 167 times fewer
+regions than positions, one witness region per 5.6 own-turn positions,
+and 99.3% of the opponent-turn leaves settled whole. The ratio roughly
+halves with each board size, which is what a translation quotient should
+do: the concrete edge count grows with the area, the number of distinct
+relative patterns does not.
+
+What is still enumerated: the retrograde table (used only to cross-check),
+and the synthesis itself, whose fixpoint still walks every concrete
+position. The region machinery now checks the certificate without doing
+so; making the *discovery* run over regions — closing the fixpoint on
+offset-domain cells instead of positions — is the natural next step, and
+would be the first piece of this project that never touches the position
+set at all.
 
 Where that leaves the tweet argument: the drawn game's proof object is an
 inductive invariant and it *is* compressible (152 relational decisions
